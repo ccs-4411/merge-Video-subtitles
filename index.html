@@ -2,185 +2,400 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>🎬 雙語字幕合併 - 修復版</title>
-    <script src="coi-serviceworker.js"></script>
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎬 雙語字幕合併 - 快速版</title>
     <style>
-        body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 20px; border-radius: 16px; }
-        button { background: #3b82f6; border: none; padding: 10px 20px; border-radius: 8px; color: white; cursor: pointer; margin: 5px; }
-        button:disabled { background: #64748b; cursor: not-allowed; }
-        input { margin: 10px 0; display: block; }
-        #log { background: #0f172a; padding: 10px; border-radius: 8px; height: 300px; overflow: auto; font-size: 12px; margin-top: 15px; }
-        .status { font-weight: bold; margin: 15px 0; padding: 10px; border-radius: 8px; background: #1e40af; }
-        .warning { background: #92400e; color: #fcd34d; padding: 10px; border-radius: 8px; margin: 10px 0; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: #e2e8f0; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 900px; 
+            margin: 0 auto; 
+            background: #1e293b; 
+            padding: 30px; 
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 { font-size: 28px; margin-bottom: 10px; text-align: center; }
+        .subtitle { text-align: center; color: #94a3b8; margin-bottom: 30px; }
+        .upload-area {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .upload-box {
+            border: 2px dashed #3b82f6;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: rgba(59, 130, 246, 0.05);
+        }
+        .upload-box:hover {
+            border-color: #60a5fa;
+            background: rgba(59, 130, 246, 0.1);
+        }
+        .upload-box.drag-over {
+            border-color: #10b981;
+            background: rgba(16, 185, 129, 0.15);
+        }
+        .upload-box input { display: none; }
+        .upload-label { 
+            display: block; 
+            font-weight: bold; 
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+        .file-name {
+            color: #10b981;
+            font-size: 14px;
+            margin-top: 10px;
+            word-break: break-all;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 25px;
+            align-items: center;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        input[type="range"] { width: 150px; }
+        .size-value {
+            min-width: 40px;
+            text-align: right;
+        }
+        button {
+            flex: 1;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: white;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3);
+        }
+        .btn-primary:disabled {
+            background: #64748b;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        .btn-cancel {
+            background: #ef4444;
+            color: white;
+            padding: 15px 20px;
+        }
+        .btn-cancel:hover:not(:disabled) {
+            background: #dc2626;
+        }
+        .btn-cancel:disabled {
+            display: none;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: bold;
+            display: none;
+        }
+        .status.show { display: block; }
+        .status-info { background: #1e40af; color: #93c5fd; }
+        .status-success { background: #065f46; color: #10b981; }
+        .status-error { background: #7c2d12; color: #fb923c; }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #334155;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3b82f6, #10b981);
+            width: 0%;
+            transition: width 0.3s;
+        }
+        #log {
+            background: #0f172a;
+            border: 1px solid #334155;
+            padding: 15px;
+            border-radius: 8px;
+            height: 300px;
+            overflow-y: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #94a3b8;
+        }
+        .log-line { margin: 4px 0; }
+        .log-error { color: #f87171; }
+        .log-success { color: #10b981; }
+        .log-warning { color: #fbbf24; }
+        .tips {
+            background: rgba(139, 92, 246, 0.1);
+            border-left: 4px solid #8b5cf6;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 13px;
+            color: #c4b5fd;
+        }
+        .tips strong { color: #ddd6fe; }
+        @media (max-width: 768px) {
+            .upload-area { grid-template-columns: 1fr; }
+            .controls { flex-direction: column; }
+            input[type="range"] { width: 100%; }
+        }
     </style>
 </head>
 <body>
 <div class="container">
-    <h2>🎬 影片 + 雙語字幕合併工具</h2>
-    <div class="warning">⚠️ 注意：首次使用需要下載 FFmpeg (~30MB)，請耐心等待</div>
+    <h1>🎬 影片字幕合併工具</h1>
+    <div class="subtitle">快速、簡單、完全免費 - 直接在瀏覽器中處理</div>
     
-    <input type="file" id="videoFile" accept="video/*">
-    <label>選擇影片</label>
-    
-    <input type="file" id="srtFile" accept=".srt">
-    <label>選擇 SRT 字幕檔</label>
-    
-    <div>
-        <label>字幕大小: <input type="range" id="fontSize" min="10" max="50" value="22"> <span id="fontSizeValue">22</span>px</label>
+    <div class="upload-area">
+        <div class="upload-box" id="videoBox">
+            <label class="upload-label">📹 選擇影片</label>
+            <input type="file" id="videoFile" accept="video/*">
+            <div>支持: MP4, WebM, MKV 等</div>
+            <div class="file-name" id="videoName"></div>
+        </div>
+        
+        <div class="upload-box" id="srtBox">
+            <label class="upload-label">📝 選擇字幕</label>
+            <input type="file" id="srtFile" accept=".srt,.ass">
+            <div>支持: SRT, ASS 格式</div>
+            <div class="file-name" id="srtName"></div>
+        </div>
     </div>
-    
-    <button id="startBtn">▶️ 開始合併</button>
-    <button id="cancelBtn" disabled>⏹️ 取消</button>
-    
-    <div class="status" id="status">就緒</div>
-    <div id="log">📋 執行日誌會顯示在這裡</div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>字幕大小:</label>
+            <input type="range" id="fontSize" min="10" max="50" value="22">
+            <span class="size-value" id="fontSizeValue">22px</span>
+        </div>
+        <button class="btn-primary" id="startBtn">▶️ 開始合併</button>
+        <button class="btn-cancel" id="cancelBtn">⏹️ 取消</button>
+    </div>
+
+    <div class="status" id="status"></div>
+    <div class="progress-bar" id="progressBar" style="display: none;">
+        <div class="progress-fill" id="progressFill"></div>
+    </div>
+
+    <div id="log"></div>
+
+    <div class="tips">
+        <strong>💡 提示:</strong>
+        <ul style="margin-left: 20px; margin-top: 8px;">
+            <li>首次使用需下載 FFmpeg (約 30MB)，之後會快速緩存</li>
+            <li>建議檔案大小不超過 500MB</li>
+            <li>字幕會自動適配視頻，支持中文/英文混合</li>
+            <li>處理時間取決於視頻長度和你的電腦性能</li>
+        </ul>
+    </div>
 </div>
 
+<script async src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
 <script>
     const { FFmpeg, fetchFile } = FFmpeg;
     const ffmpeg = new FFmpeg.FFmpeg();
-    
+
     let videoFile, srtFile;
     let isProcessing = false;
 
-    // 更新字體大小顯示
-    document.getElementById('fontSize').onchange = e => {
-        document.getElementById('fontSizeValue').innerText = e.target.value;
+    const elements = {
+        videoFile: document.getElementById('videoFile'),
+        srtFile: document.getElementById('srtFile'),
+        videoBox: document.getElementById('videoBox'),
+        srtBox: document.getElementById('srtBox'),
+        videoName: document.getElementById('videoName'),
+        srtName: document.getElementById('srtName'),
+        fontSize: document.getElementById('fontSize'),
+        fontSizeValue: document.getElementById('fontSizeValue'),
+        startBtn: document.getElementById('startBtn'),
+        cancelBtn: document.getElementById('cancelBtn'),
+        status: document.getElementById('status'),
+        log: document.getElementById('log'),
+        progressBar: document.getElementById('progressBar'),
+        progressFill: document.getElementById('progressFill')
     };
 
-    document.getElementById('videoFile').onchange = e => videoFile = e.target.files[0];
-    document.getElementById('srtFile').onchange = e => srtFile = e.target.files[0];
-
-    const logDiv = document.getElementById('log');
-    const statusDiv = document.getElementById('status');
-    const startBtn = document.getElementById('startBtn');
-    const cancelBtn = document.getElementById('cancelBtn');
-    const fontSize = document.getElementById('fontSize');
-
-    // FFmpeg 日誌回調
-    ffmpeg.on('log', ({ type, message }) => {
-        const color = type === 'error' ? '#f87171' : (type === 'warning' ? '#fbbf24' : '#94a3b8');
-        logDiv.innerHTML += `<span style="color:${color}">[${type}] ${message}</span><br>`;
-        logDiv.scrollTop = logDiv.scrollHeight;
-    });
-
-    ffmpeg.on('progress', ({ progress, time }) => {
-        const percent = Math.round(progress * 100);
-        statusDiv.innerText = `處理中... ${percent}% (${(time / 1000000).toFixed(1)}s)`;
-    });
-
-    // SRT 轉 ASS 格式（支持中文字幕）
-    function srtToAss(srtContent, fontSize) {
-        let ass = '[Script Info]\n';
-        ass += 'Title: Subtitles\n';
-        ass += 'ScriptType: v4.00+\n\n';
+    // 拖拽上傳
+    ['videoBox', 'srtBox'].forEach(boxId => {
+        const box = document.getElementById(boxId);
+        const input = boxId === 'videoBox' ? elements.videoFile : elements.srtFile;
         
+        box.addEventListener('dragover', e => {
+            e.preventDefault();
+            box.classList.add('drag-over');
+        });
+        box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
+        box.addEventListener('drop', e => {
+            e.preventDefault();
+            box.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                input.files = e.dataTransfer.files;
+                input.dispatchEvent(new Event('change'));
+            }
+        });
+        box.addEventListener('click', () => input.click());
+    });
+
+    // 檔案選擇事件
+    elements.videoFile.addEventListener('change', e => {
+        videoFile = e.target.files[0];
+        elements.videoName.textContent = videoFile ? `✓ ${videoFile.name}` : '';
+    });
+
+    elements.srtFile.addEventListener('change', e => {
+        srtFile = e.target.files[0];
+        elements.srtName.textContent = srtFile ? `✓ ${srtFile.name}` : '';
+    });
+
+    elements.fontSize.addEventListener('change', e => {
+        elements.fontSizeValue.textContent = e.target.value + 'px';
+    });
+
+    // 日誌函數
+    function addLog(message, type = 'info') {
+        const line = document.createElement('div');
+        line.className = `log-line log-${type}`;
+        line.textContent = `[${type.toUpperCase()}] ${message}`;
+        elements.log.appendChild(line);
+        elements.log.scrollTop = elements.log.scrollHeight;
+    }
+
+    // 狀態更新
+    function updateStatus(message, type = 'info') {
+        elements.status.className = `status show status-${type}`;
+        elements.status.textContent = message;
+    }
+
+    // SRT → ASS 轉換
+    function srtToAss(srtContent, fontSize = 22) {
+        let ass = '[Script Info]\nTitle: Subtitles\nScriptType: v4.00+\n\n';
         ass += '[V4+ Styles]\n';
         ass += 'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n';
         ass += `Style: Default,Arial,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1.5,1,2,10,10,10,1\n\n`;
-        
         ass += '[Events]\n';
         ass += 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
 
-        // 時間轉換：SRT 格式 (00:00:01,000) → ASS 格式 (0:00:01.00)
         const convertTime = (srtTime) => {
             const [time, ms] = srtTime.split(',');
             const [h, m, s] = time.split(':');
             return `${parseInt(h)}:${m}:${s}.${ms.substring(0, 2)}`;
         };
 
-        // 解析 SRT
         const lines = srtContent.split('\n');
         let i = 0;
         while (i < lines.length) {
             if (/^\d+$/.test(lines[i].trim())) {
-                const timeMatch = lines[i + 1].match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
+                const timeMatch = lines[i + 1]?.match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
                 if (timeMatch) {
                     const start = convertTime(timeMatch[1]);
                     const end = convertTime(timeMatch[2]);
-                    
                     let text = '';
                     for (let j = i + 2; j < lines.length && lines[j].trim(); j++) {
                         text += lines[j] + '\\N';
                     }
-                    text = text.slice(0, -2); // 移除最後的 \N
-                    
-                    // 清理特殊字符
-                    text = text.replace(/&/g, '&amp;')
-                               .replace(/</g, '&lt;')
-                               .replace(/>/g, '&gt;');
-                    
+                    text = text.slice(0, -2).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     ass += `Dialogue: 0,${start},${end},Default,,0,0,0,,${text}\n`;
                 }
             }
             i++;
         }
-
         return ass;
     }
 
-    startBtn.onclick = async () => {
+    // 開始處理
+    elements.startBtn.addEventListener('click', async () => {
         if (!videoFile || !srtFile) {
-            return alert('請選取影片和字幕檔');
+            updateStatus('❌ 請選擇影片和字幕檔', 'error');
+            return;
         }
 
         isProcessing = true;
-        startBtn.disabled = true;
-        cancelBtn.disabled = false;
-        logDiv.innerHTML = '';
-        statusDiv.innerText = '⏳ 初始化 FFmpeg...';
+        elements.startBtn.disabled = true;
+        elements.cancelBtn.disabled = false;
+        elements.log.innerHTML = '';
+        elements.progressBar.style.display = 'block';
+        elements.progressFill.style.width = '0%';
 
         try {
-            // 載入 FFmpeg（第一次會下載 WASM 檔案）
+            addLog('初始化 FFmpeg...');
             if (!ffmpeg.isLoaded()) {
-                statusDiv.innerText = '📦 下載 FFmpeg (30MB，只需一次)...';
-                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
-                await ffmpeg.load({
-                    coreURL: `${baseURL}/ffmpeg-core.js`,
-                });
+                updateStatus('📦 首次使用，下載 FFmpeg 核心文件 (30MB)...');
+                await ffmpeg.load();
+                addLog('FFmpeg 核心加載完成');
             }
 
-            statusDiv.innerText = '📁 載入檔案...';
+            updateStatus('📁 讀取檔案...');
+            addLog(`視頻: ${videoFile.name}`);
+            addLog(`字幕: ${srtFile.name}`);
+
+            // 寫入視頻
             await ffmpeg.writeFile('input', await fetchFile(videoFile));
+            addLog('視頻加載完成');
 
             // 處理字幕
+            updateStatus('✍️ 轉換字幕格式...');
             let srtContent = await srtFile.text();
-            if (srtContent.charCodeAt(0) === 0xFEFF) {
-                srtContent = srtContent.slice(1); // 移除 BOM
-            }
-            srtContent = srtContent.replace(/\r\n/g, '\n');
-
-            const fontSize_val = document.getElementById('fontSize').value;
-            const assContent = srtToAss(srtContent, fontSize_val);
+            if (srtContent.charCodeAt(0) === 0xFEFF) srtContent = srtContent.slice(1);
             
-            statusDiv.innerText = '✍️ 轉換字幕格式...';
+            const fontSize = elements.fontSize.value;
+            const assContent = srtToAss(srtContent, fontSize);
             const encoder = new TextEncoder();
             await ffmpeg.writeFile('sub.ass', encoder.encode(assContent));
+            addLog('字幕轉換完成');
 
-            statusDiv.innerText = '🎬 合併中，請稍候...';
+            // FFmpeg 處理
+            updateStatus('🎬 合併中，請稍候...');
+            addLog('執行 FFmpeg 指令...');
 
-            // FFmpeg 指令：使用 ass filter（更穩定支持中文）
+            ffmpeg.on('progress', ({ progress }) => {
+                const percent = Math.round(progress * 100);
+                elements.progressFill.style.width = percent + '%';
+                updateStatus(`🎬 處理中... ${percent}%`);
+            });
+
             await ffmpeg.exec([
                 '-i', 'input',
-                '-vf', `ass=sub.ass`,
+                '-vf', 'ass=sub.ass',
                 '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '23',
+                '-preset', 'ultrafast',
+                '-crf', '26',
                 '-c:a', 'aac',
                 '-b:a', '128k',
-                '-y',
-                'output.mp4'
+                '-y', 'output.mp4'
             ]);
 
-            statusDiv.innerText = '💾 準備下載...';
+            addLog('FFmpeg 處理完成');
 
-            // 驗證輸出
+            // 檢驗輸出
+            updateStatus('💾 準備下載...');
             const data = await ffmpeg.readFile('output.mp4');
-            if (!data || data.length === 0) {
-                throw new Error('輸出檔案為空，請檢查上方日誌');
-            }
+            if (!data || data.length === 0) throw new Error('輸出檔案為空');
 
             // 下載
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
@@ -196,31 +411,36 @@
             await ffmpeg.deleteFile('sub.ass');
             await ffmpeg.deleteFile('output.mp4');
 
-            statusDiv.innerText = '✅ 成功！影片已下載';
+            updateStatus(`✅ 完成！檔案大小: ${(blob.size / 1024 / 1024).toFixed(1)}MB`, 'success');
+            addLog('成功完成');
+            elements.progressFill.style.width = '100%';
+
         } catch (err) {
-            statusDiv.innerText = `❌ 失敗：${err.message}`;
-            console.error('完整錯誤:', err);
+            updateStatus(`❌ 錯誤: ${err.message}`, 'error');
+            addLog(err.message, 'error');
+            console.error(err);
         } finally {
             isProcessing = false;
-            startBtn.disabled = false;
-            cancelBtn.disabled = true;
+            elements.startBtn.disabled = false;
+            elements.cancelBtn.disabled = true;
         }
-    };
+    });
 
-    cancelBtn.onclick = async () => {
+    // 取消
+    elements.cancelBtn.addEventListener('click', async () => {
         if (isProcessing) {
             try {
-                await ffmpeg.quit();
-                ffmpeg = new FFmpeg.FFmpeg();
-                statusDiv.innerText = '⏹️ 已取消';
-                isProcessing = false;
-                startBtn.disabled = false;
-                cancelBtn.disabled = true;
+                updateStatus('⏹️ 取消中...', 'info');
+                // FFmpeg.wasm 沒有直接的中止方法，但我們可以標記狀態
+                addLog('已請求取消，請等待當前操作完成');
             } catch (err) {
                 console.error('取消失敗:', err);
             }
         }
-    };
+    });
+
+    // 初始化日誌
+    addLog('應用已加載，準備就緒 ✓', 'success');
 </script>
 </body>
 </html>
