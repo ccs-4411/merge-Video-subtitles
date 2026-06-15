@@ -2,98 +2,187 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>🎬 雙語字幕合併 - 最終成功版</title>
+    <title>🎬 雙語字幕合併 - 修復版</title>
     <script src="coi-serviceworker.js"></script>
-    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
     <style>
         body { background: #0f172a; color: #e2e8f0; font-family: monospace; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 20px; border-radius: 16px; }
-        button { background: #3b82f6; border: none; padding: 10px 20px; border-radius: 8px; color: white; cursor: pointer; }
+        button { background: #3b82f6; border: none; padding: 10px 20px; border-radius: 8px; color: white; cursor: pointer; margin: 5px; }
+        button:disabled { background: #64748b; cursor: not-allowed; }
         input { margin: 10px 0; display: block; }
         #log { background: #0f172a; padding: 10px; border-radius: 8px; height: 300px; overflow: auto; font-size: 12px; margin-top: 15px; }
-        .status { font-weight: bold; margin: 15px 0; }
+        .status { font-weight: bold; margin: 15px 0; padding: 10px; border-radius: 8px; background: #1e40af; }
+        .warning { background: #92400e; color: #fcd34d; padding: 10px; border-radius: 8px; margin: 10px 0; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h2>🎬 影片 + 雙語字幕合併工具 (保證顯示中文)</h2>
+    <h2>🎬 影片 + 雙語字幕合併工具</h2>
+    <div class="warning">⚠️ 注意：首次使用需要下載 FFmpeg (~30MB)，請耐心等待</div>
+    
     <input type="file" id="videoFile" accept="video/*">
+    <label>選擇影片</label>
+    
     <input type="file" id="srtFile" accept=".srt">
-    <button id="startBtn">開始合併</button>
+    <label>選擇 SRT 字幕檔</label>
+    
+    <div>
+        <label>字幕大小: <input type="range" id="fontSize" min="10" max="50" value="22"> <span id="fontSizeValue">22</span>px</label>
+    </div>
+    
+    <button id="startBtn">▶️ 開始合併</button>
+    <button id="cancelBtn" disabled>⏹️ 取消</button>
+    
     <div class="status" id="status">就緒</div>
-    <div id="log">📋 FFmpeg 執行日誌會顯示在這裡</div>
+    <div id="log">📋 執行日誌會顯示在這裡</div>
 </div>
 
 <script>
-    const { createFFmpeg, fetchFile } = FFmpeg;
-    const ffmpeg = createFFmpeg({
-        log: true,
-        logger: ({ type, message }) => {
-            const logDiv = document.getElementById('log');
-            const color = type === 'fferr' ? '#f87171' : '#94a3b8';
-            logDiv.innerHTML += `<span style="color:${color}">[${type}] ${message}</span><br>`;
-            logDiv.scrollTop = logDiv.scrollHeight;
-        }
-    });
-
+    const { FFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = new FFmpeg.FFmpeg();
+    
     let videoFile, srtFile;
+    let isProcessing = false;
+
+    // 更新字體大小顯示
+    document.getElementById('fontSize').onchange = e => {
+        document.getElementById('fontSizeValue').innerText = e.target.value;
+    };
 
     document.getElementById('videoFile').onchange = e => videoFile = e.target.files[0];
     document.getElementById('srtFile').onchange = e => srtFile = e.target.files[0];
-    document.getElementById('startBtn').onclick = async () => {
-        if (!videoFile || !srtFile) return alert('請選取影片和字幕');
-        const startBtn = document.getElementById('startBtn');
-        const statusDiv = document.getElementById('status');
-        const logDiv = document.getElementById('log');
-        logDiv.innerHTML = ''; // 清空舊日誌
+
+    const logDiv = document.getElementById('log');
+    const statusDiv = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const fontSize = document.getElementById('fontSize');
+
+    // FFmpeg 日誌回調
+    ffmpeg.on('log', ({ type, message }) => {
+        const color = type === 'error' ? '#f87171' : (type === 'warning' ? '#fbbf24' : '#94a3b8');
+        logDiv.innerHTML += `<span style="color:${color}">[${type}] ${message}</span><br>`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    });
+
+    ffmpeg.on('progress', ({ progress, time }) => {
+        const percent = Math.round(progress * 100);
+        statusDiv.innerText = `處理中... ${percent}% (${(time / 1000000).toFixed(1)}s)`;
+    });
+
+    // SRT 轉 ASS 格式（支持中文字幕）
+    function srtToAss(srtContent, fontSize) {
+        let ass = '[Script Info]\n';
+        ass += 'Title: Subtitles\n';
+        ass += 'ScriptType: v4.00+\n\n';
+        
+        ass += '[V4+ Styles]\n';
+        ass += 'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n';
+        ass += `Style: Default,Arial,${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1.5,1,2,10,10,10,1\n\n`;
+        
+        ass += '[Events]\n';
+        ass += 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
+
+        // 時間轉換：SRT 格式 (00:00:01,000) → ASS 格式 (0:00:01.00)
+        const convertTime = (srtTime) => {
+            const [time, ms] = srtTime.split(',');
+            const [h, m, s] = time.split(':');
+            return `${parseInt(h)}:${m}:${s}.${ms.substring(0, 2)}`;
+        };
+
+        // 解析 SRT
+        const lines = srtContent.split('\n');
+        let i = 0;
+        while (i < lines.length) {
+            if (/^\d+$/.test(lines[i].trim())) {
+                const timeMatch = lines[i + 1].match(/(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})/);
+                if (timeMatch) {
+                    const start = convertTime(timeMatch[1]);
+                    const end = convertTime(timeMatch[2]);
+                    
+                    let text = '';
+                    for (let j = i + 2; j < lines.length && lines[j].trim(); j++) {
+                        text += lines[j] + '\\N';
+                    }
+                    text = text.slice(0, -2); // 移除最後的 \N
+                    
+                    // 清理特殊字符
+                    text = text.replace(/&/g, '&amp;')
+                               .replace(/</g, '&lt;')
+                               .replace(/>/g, '&gt;');
+                    
+                    ass += `Dialogue: 0,${start},${end},Default,,0,0,0,,${text}\n`;
+                }
+            }
+            i++;
+        }
+
+        return ass;
+    }
+
+    startBtn.onclick = async () => {
+        if (!videoFile || !srtFile) {
+            return alert('請選取影片和字幕檔');
+        }
+
+        isProcessing = true;
         startBtn.disabled = true;
-        statusDiv.innerText = '初始化 FFmpeg...';
+        cancelBtn.disabled = false;
+        logDiv.innerHTML = '';
+        statusDiv.innerText = '⏳ 初始化 FFmpeg...';
 
         try {
-            await ffmpeg.load();
-            statusDiv.innerText = '載入影片...';
-            ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
+            // 載入 FFmpeg（第一次會下載 WASM 檔案）
+            if (!ffmpeg.isLoaded()) {
+                statusDiv.innerText = '📦 下載 FFmpeg (30MB，只需一次)...';
+                const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+                await ffmpeg.load({
+                    coreURL: `${baseURL}/ffmpeg-core.js`,
+                });
+            }
 
-            // 處理字幕：移除 BOM，強制 UTF-8
+            statusDiv.innerText = '📁 載入檔案...';
+            await ffmpeg.writeFile('input', await fetchFile(videoFile));
+
+            // 處理字幕
             let srtContent = await srtFile.text();
-            if (srtContent.charCodeAt(0) === 0xFEFF) srtContent = srtContent.slice(1);
+            if (srtContent.charCodeAt(0) === 0xFEFF) {
+                srtContent = srtContent.slice(1); // 移除 BOM
+            }
             srtContent = srtContent.replace(/\r\n/g, '\n');
-            ffmpeg.FS('writeFile', 'sub.srt', new TextEncoder().encode(srtContent));
 
-            statusDiv.innerText = '📦 下載中文字型 (思源黑體 TTF) ...';
-            // 下載穩定可靠的中文字型 (Noto Sans CJK TC Regular)
-            const fontUrl = 'https://github.com/ArtoriaTech/NotoSansCJKTC/raw/master/NotoSansTC-Regular.ttf';
-            const fontResp = await fetch(fontUrl);
-            if (!fontResp.ok) throw new Error('字型下載失敗');
-            const fontBuf = await fontResp.arrayBuffer();
-            ffmpeg.FS('writeFile', 'myfont.ttf', new Uint8Array(fontBuf));
+            const fontSize_val = document.getElementById('fontSize').value;
+            const assContent = srtToAss(srtContent, fontSize_val);
+            
+            statusDiv.innerText = '✍️ 轉換字幕格式...';
+            const encoder = new TextEncoder();
+            await ffmpeg.writeFile('sub.ass', encoder.encode(assContent));
 
-            statusDiv.innerText = '🎞️ 開始合併 (使用 subtitles filter + 中文字型) ...';
+            statusDiv.innerText = '🎬 合併中，請稍候...';
 
-            // 設定進度 (選擇性)
-            ffmpeg.setProgress(({ ratio }) => {
-                const percent = Math.round(ratio * 100);
-                statusDiv.innerText = `合併中... ${percent}%`;
-            });
-
-            // 關鍵指令：fontfile 不加引號，fontsdir 設為當前目錄
-            await ffmpeg.run(
-                '-y',                       // 覆蓋輸出
-                '-fflags', '+genpts',       // 修正時間戳
-                '-i', 'input.mp4',
-                '-vf', `subtitles=sub.srt:fontsdir=.:fontfile=myfont.ttf:force_style='FontSize=22,Outline=2,BorderStyle=1'`,
+            // FFmpeg 指令：使用 ass filter（更穩定支持中文）
+            await ffmpeg.exec([
+                '-i', 'input',
+                '-vf', `ass=sub.ass`,
                 '-c:v', 'libx264',
-                '-preset', 'superfast',
+                '-preset', 'fast',
                 '-crf', '23',
-                '-c:a', 'copy',             // 複製音訊，不重新編碼
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                '-y',
                 'output.mp4'
-            );
+            ]);
 
-            const stat = ffmpeg.FS('stat', 'output.mp4');
-            if (!stat || stat.size === 0) throw new Error('輸出檔案為 0 KB，請檢查上方日誌中的錯誤');
+            statusDiv.innerText = '💾 準備下載...';
 
-            statusDiv.innerText = '下載中...';
-            const data = ffmpeg.FS('readFile', 'output.mp4');
+            // 驗證輸出
+            const data = await ffmpeg.readFile('output.mp4');
+            if (!data || data.length === 0) {
+                throw new Error('輸出檔案為空，請檢查上方日誌');
+            }
+
+            // 下載
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -103,17 +192,33 @@
             URL.revokeObjectURL(url);
 
             // 清理
-            ffmpeg.FS('unlink', 'input.mp4');
-            ffmpeg.FS('unlink', 'sub.srt');
-            ffmpeg.FS('unlink', 'myfont.ttf');
-            ffmpeg.FS('unlink', 'output.mp4');
+            await ffmpeg.deleteFile('input');
+            await ffmpeg.deleteFile('sub.ass');
+            await ffmpeg.deleteFile('output.mp4');
 
-            statusDiv.innerText = '✅ 成功！影片已下載，請檢查雙語字幕是否正常顯示。';
+            statusDiv.innerText = '✅ 成功！影片已下載';
         } catch (err) {
             statusDiv.innerText = `❌ 失敗：${err.message}`;
-            console.error(err);
+            console.error('完整錯誤:', err);
         } finally {
+            isProcessing = false;
             startBtn.disabled = false;
+            cancelBtn.disabled = true;
+        }
+    };
+
+    cancelBtn.onclick = async () => {
+        if (isProcessing) {
+            try {
+                await ffmpeg.quit();
+                ffmpeg = new FFmpeg.FFmpeg();
+                statusDiv.innerText = '⏹️ 已取消';
+                isProcessing = false;
+                startBtn.disabled = false;
+                cancelBtn.disabled = true;
+            } catch (err) {
+                console.error('取消失敗:', err);
+            }
         }
     };
 </script>
