@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎬 影片與雙語字幕合併工具 (GitHub Pages 終極修復版)</title>
+    <title>🎬 影片與雙語字幕合併工具 (GitHub Pages 終極定製版)</title>
     
     <!-- 確保跨域隔離環境，讓 FFmpeg.wasm 能正常編寫記憶體 -->
     <script src="coi-serviceworker.js"></script>
@@ -85,7 +85,7 @@
 
 <div class="container">
     <h1>🎬 影片與雙語字幕合併工具</h1>
-    <p>將您的雙語 SRT 字幕永久燒錄進影片中。本版本已修復虛擬路徑載入錯誤，並啟動時間軸自動容錯校正技術。</p>
+    <p>將您的雙語 SRT 字幕永久燒錄進影片中。本版本已將中文字型精準對準您倉庫中的微軟正黑體細體 (msjhl.ttc)。</p>
     
     <div class="upload-group">
         <label class="btn" for="videoUploader">📁 1. 選擇影片檔案 (MP4/MKV/MOV)</label>
@@ -109,7 +109,6 @@
 <script>
     const { createFFmpeg, fetchFile } = FFmpeg;
     
-    // 開啟內建 log 紀錄，方便在瀏覽器 F12 監控狀態
     const ffmpeg = createFFmpeg({ log: true });
 
     const videoUploader = document.getElementById('videoUploader');
@@ -165,7 +164,7 @@
     ffmpeg.setProgress(({ ratio }) => {
         const percentage = Math.min(Math.max(Math.round(ratio * 100), 0), 100);
         progressBarFill.style.width = `${percentage}%`;
-        status.innerText = `⏳ 正在努力壓制雙語字幕中... ${percentage}% \n(請勿關閉網頁，大影片需要較多處理時間)`;
+        status.innerText = `⏳ 正在努力壓制雙語字幕中... ${percentage}% \n(請勿關閉網頁)`;
         status.style.color = '#0284c7';
     });
 
@@ -179,21 +178,19 @@
         progressBarFill.style.width = '0%';
         status.style.color = '#0f172a';
 
-        // 統一簡化內部名稱，避免任何空格或中文字元干擾 CLI 參數解析
         const videoIn = 'input' + videoFile.name.substring(videoFile.name.lastIndexOf('.'));
         const srtIn = 'subtitles.srt';
-        const fontName = 'msjh.ttc';  // 虛擬沙盒中的檔名
+        const fontName = 'msjhl.ttc';  // 💡 已精準對齊您的檔名
         const videoOut = 'output_with_subtitles.mp4';
 
         try {
-            // 💡 繞過 Bug 關鍵核心：改用網頁原生 fetch 安全抓取倉庫內的微軟正黑體，不調用出錯的 fetchFile 路徑正則
-            status.innerText = '💾 正在透過安全通道載入微軟正黑體字型系統...';
-            const fontResponse = await fetch('./msjh.ttc');
+            // 💡 使用正確的檔名進行安全非同步抓取
+            status.innerText = '💾 正在從您的倉庫下載微軟正黑體細體 (msjhl.ttc)...';
+            const fontResponse = await fetch('./msjhl.ttc');
             if (!fontResponse.ok) {
-                throw new Error('無法在伺服器上讀取 msjh.ttc，請確認此字型檔有上傳到與 index.html 相同的資料夾。');
+                throw new Error('無法在伺服器上讀取 msjhl.ttc，請確認此字型檔有上傳到與 index.html 相同的資料夾，且注意英文大小寫需完全相符。');
             }
             const fontBuffer = await fontResponse.arrayBuffer();
-            // 直接以 Uint8Array 陣列形式塞入沙盒檔案系統
             ffmpeg.FS('writeFile', fontName, new Uint8Array(fontBuffer));
 
             // 寫入影片與字幕檔案到虛擬記憶體
@@ -203,13 +200,11 @@
 
             status.innerText = '⏳ 初始化壓制引擎（已啟動自動時間戳重構技術）...';
 
-            // ⚡ 終極容錯指令配置：
-            // 1. '-fflags', '+genpts'：強力介入修正错亂或逆流的時間軸，避免 C 語言指標溢出當機
-            // 2. fontfile='msjh.ttc'：直接以檔案路徑指定字型，不透過內嵌索引查詢，100% 成功。
+            // ⚡ 強大容錯壓制參數，精準呼叫實體檔名 'msjhl.ttc'
             await ffmpeg.run(
                 '-fflags', '+genpts',
                 '-i', videoIn,
-                '-vf', `subtitles=${srtIn}:fontsdir=.:fontfile='msjh.ttc':force_style='FontSize=22,Outline=2,PrimaryColour=&HFFFFFF,BorderStyle=1'`,
+                '-vf', `subtitles=${srtIn}:fontsdir=.:fontfile='msjhl.ttc':force_style='FontSize=22,Outline=2,PrimaryColour=&HFFFFFF,BorderStyle=1'`,
                 '-vcodec', 'libx264',
                 '-acodec', 'aac',
                 '-pix_fmt', 'yuv420p',
@@ -220,7 +215,6 @@
             status.innerText = '🎉 字幕硬燒錄完成！正在準備下載影片...';
             status.style.color = '#10b981';
 
-            // 從虛擬記憶體讀出成品影片
             const data = ffmpeg.FS('readFile', videoOut);
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
@@ -232,7 +226,7 @@
             a.click();
             document.body.removeChild(a);
 
-            // 🧹 清理虛擬記憶體空間
+            // 清理虛擬記憶體空間
             ffmpeg.FS('unlink', videoIn);
             ffmpeg.FS('unlink', srtIn);
             ffmpeg.FS('unlink', fontName);
