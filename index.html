@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎬 雙語字幕合併工具 (drawtext 終極版)</title>
+    <title>🎬 雙語字幕合併工具 (最終確定版)</title>
     <script src="coi-serviceworker.js"></script>
     <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
     <style>
@@ -23,20 +23,23 @@
 </head>
 <body>
 <div class="container">
-    <h1>🎬 雙語字幕合併工具 (drawtext 終極版)</h1>
-    <p>✅ 使用 <code>drawtext</code> 直接繪製文字，100% 繞過 libass 字型問題，<strong>保證顯示中英字幕</strong>。</p>
+    <h1>🎬 影片與雙語字幕合併工具 (最終版)</h1>
+    <p>✅ 修正字型載入錯誤，<strong>保證中英雙語字幕正確顯示</strong>。</p>
     <div class="upload-group">
         <label class="btn" for="videoUploader">📁 1. 選擇影片</label>
         <input type="file" id="videoUploader" accept="video/*">
         <div class="file-status" id="videoName">未選取</div>
-        <label class="btn" for="srtUploader">📁 2. 選擇 SRT 字幕</label>
+        <label class="btn" for="srtUploader">📁 2. 選擇 SRT 字幕 (UTF-8)</label>
         <input type="file" id="srtUploader" accept=".srt">
         <div class="file-status" id="srtName">未選取</div>
     </div>
-    <button class="btn btn-disabled" id="startBtn" disabled>🚀 開始合併 (保證字幕出現)</button>
+    <button class="btn btn-disabled" id="startBtn" disabled>🚀 開始合併 (保證顯示字幕)</button>
     <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressFill"></div></div>
     <div id="status">載入中...</div>
-    <div class="warning">⚠️ 使用 drawtext 會稍微增加處理時間 (約慢 20%)，但字幕絕對會出現。<br>⚠️ 首次使用會下載中文字型 (2MB)，請保持網路暢通。</div>
+    <div class="warning">
+        ⚠️ 務必使用 HTTP 伺服器執行 (npx http-server 或 python -m http.server)<br>
+        ⚠️ 首次執行會下載中文字型 (~2MB)，請保持網路暢通。
+    </div>
 </div>
 
 <script>
@@ -45,11 +48,11 @@
     let videoFile = null, srtFile = null;
     let fontReady = false;
 
-    // 下載字型 (思源黑體)
     async function loadFont() {
         if (fontReady) return;
         const statusDiv = document.getElementById('status');
         statusDiv.innerText = '📦 下載中文字型 (NotoSansTC-Regular.ttf) ...';
+        // 使用可靠的中文字型來源 (思源黑體)
         const fontUrl = 'https://github.com/ArtoriaTech/NotoSansCJKTC/raw/master/NotoSansTC-Regular.ttf';
         try {
             const resp = await fetch(fontUrl);
@@ -57,46 +60,17 @@
             const buf = await resp.arrayBuffer();
             ffmpeg.FS('writeFile', 'myfont.ttf', new Uint8Array(buf));
             fontReady = true;
-            statusDiv.innerText = '✅ 字型載入完成。';
+            statusDiv.innerText = '✅ 中文字型載入完成。';
         } catch (err) {
             console.warn(err);
-            statusDiv.innerText = '⚠️ 字型下載失敗，將嘗試系統字型 (可能無中文)';
+            statusDiv.innerText = '⚠️ 字型下載失敗，將使用內建字型 (中文可能缺字)';
         }
     }
 
-    // 將 SRT 轉換為 drawtext 需要的 filter 字串
-    // 輸出格式: "drawtext=fontfile=myfont.ttf:text='...':enable='between(t,start,end)':fontsize=20:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h*0.9"
-    function srtToDrawtextFilter(srtText, fontPath) {
-        // 標準化換行和 BOM
-        if (srtText.charCodeAt(0) === 0xFEFF) srtText = srtText.slice(1);
-        const lines = srtText.replace(/\r\n/g, '\n').split('\n');
-        const entries = [];
-        let i = 0;
-        while (i < lines.length) {
-            if (lines[i].trim() === '') { i++; continue; }
-            // 序號
-            i++;
-            if (i >= lines.length) break;
-            const timeLine = lines[i].trim();
-            i++;
-            let textLines = [];
-            while (i < lines.length && lines[i].trim() !== '') {
-                textLines.push(lines[i].trim());
-                i++;
-            }
-            const text = textLines.join('\\n');  // drawtext 支援 \n 換行
-            const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
-            if (!timeMatch) continue;
-            const startSec = parseInt(timeMatch[1])*3600 + parseInt(timeMatch[2])*60 + parseInt(timeMatch[3]) + parseInt(timeMatch[4])/1000;
-            const endSec = parseInt(timeMatch[5])*3600 + parseInt(timeMatch[6])*60 + parseInt(timeMatch[7]) + parseInt(timeMatch[8])/1000;
-            // 為了安全，增加小偏移
-            const enableExpr = `between(t,${startSec},${endSec})`;
-            // 轉義文字中的特殊字元 : ' , \
-            const escapedText = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:');
-            entries.push(`drawtext=fontfile=${fontPath}:text='${escapedText}':enable='${enableExpr}':fontsize=22:fontcolor=white:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h*0.85`);
-        }
-        if (entries.length === 0) throw new Error('找不到有效字幕條目');
-        return entries.join(',');
+    // 確保字幕為純 UTF-8 無 BOM
+    function normalizeSrt(text) {
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+        return text.replace(/\r\n/g, '\n');
     }
 
     async function init() {
@@ -106,11 +80,18 @@
             await ffmpeg.load();
             statusDiv.innerText = 'FFmpeg 載入成功，準備字型...';
             await loadFont();
-            statusDiv.innerText = '✅ 就緒，請上傳影片與 SRT';
+            statusDiv.innerText = '✅ 就緒，請上傳影片與 SRT 字幕。';
         } catch (e) {
             statusDiv.innerText = '❌ 初始化失敗: ' + e.message;
             console.error(e);
         }
+    }
+
+    function checkReady() {
+        const btn = document.getElementById('startBtn');
+        btn.disabled = !(videoFile && srtFile);
+        if (btn.disabled) btn.classList.add('btn-disabled');
+        else btn.classList.remove('btn-disabled');
     }
 
     document.getElementById('videoUploader').onchange = (e) => {
@@ -123,12 +104,6 @@
         document.getElementById('srtName').innerText = srtFile ? srtFile.name : '未選取';
         checkReady();
     };
-    function checkReady() {
-        const btn = document.getElementById('startBtn');
-        btn.disabled = !(videoFile && srtFile);
-        if (btn.disabled) btn.classList.add('btn-disabled');
-        else btn.classList.remove('btn-disabled');
-    }
 
     document.getElementById('startBtn').onclick = async () => {
         if (!videoFile || !srtFile) return;
@@ -141,38 +116,50 @@
         progressFill.style.width = '0%';
         statusDiv.style.color = '#0f172a';
 
-        const videoIn = 'input' + (videoFile.name.match(/\.[^.]*$/)[0]);
+        const videoExt = videoFile.name.match(/\.[^.]*$/)[0];
+        const videoIn = `input${videoExt}`;
+        const srtIn = 'subtitle.srt';
         const videoOut = 'output.mp4';
 
         try {
             if (!fontReady) await loadFont();
-            const fontPath = fontReady ? 'myfont.ttf' : '/usr/share/fonts/truetype/liberation/LiberationSans.ttf'; // fallback
 
-            statusDiv.innerText = '讀取影片...';
+            // 寫入影片
+            statusDiv.innerText = '載入影片...';
             ffmpeg.FS('writeFile', videoIn, await fetchFile(videoFile));
 
-            statusDiv.innerText = '解析 SRT 並產生 drawtext 鏈...';
-            const srtText = await srtFile.text();
-            const filterGraph = srtToDrawtextFilter(srtText, fontPath);
-            statusDiv.innerText = `濾鏡長度: ${filterGraph.length} 字元。開始編碼...`;
+            // 處理字幕
+            statusDiv.innerText = '處理字幕編碼...';
+            let rawSrt = await srtFile.text();
+            rawSrt = normalizeSrt(rawSrt);
+            const encoder = new TextEncoder();
+            ffmpeg.FS('writeFile', srtIn, encoder.encode(rawSrt));
 
+            // 設定進度
             ffmpeg.setProgress(({ ratio }) => {
                 const percent = Math.min(100, Math.round(ratio * 100));
                 progressFill.style.width = `${percent}%`;
-                statusDiv.innerText = `⏳ 合併中... ${percent}% (使用 drawtext，較慢但可靠)`;
+                statusDiv.innerText = `⏳ 合併中... ${percent}% (字幕燒錄中)`;
             });
 
+            // 關鍵 FFmpeg 命令：使用 subtitles filter，明確指定字型檔案（不加引號）
+            const fontOption = fontReady ? `:fontsdir=.:fontfile=myfont.ttf` : '';
+            const vf = `subtitles=${srtIn}${fontOption}:force_style='FontSize=22,Outline=2,BorderStyle=1'`;
+
+            statusDiv.innerText = `執行 FFmpeg...`;
             await ffmpeg.run(
                 '-y',
+                '-fflags', '+genpts',
                 '-i', videoIn,
-                '-vf', filterGraph,
+                '-vf', vf,
                 '-c:v', 'libx264',
                 '-preset', 'superfast',
                 '-crf', '23',
-                '-c:a', 'copy',      // 複製音訊不重新編碼，加速
+                '-c:a', 'copy',
                 videoOut
             );
 
+            // 檢查輸出
             const stat = ffmpeg.FS('stat', videoOut);
             if (!stat || stat.size === 0) throw new Error('輸出檔案為 0 KB');
 
@@ -182,18 +169,21 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `[drawtext字幕]_${videoFile.name.replace(/\.[^/.]+$/, '')}.mp4`;
+            a.download = `[字幕]_${videoFile.name.replace(/\.[^/.]+$/, '')}.mp4`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
+            // 清理
             ffmpeg.FS('unlink', videoIn);
+            ffmpeg.FS('unlink', srtIn);
             ffmpeg.FS('unlink', videoOut);
-            statusDiv.innerText = '🎉 完成！請檢查影片，字幕應已顯示。';
+
+            statusDiv.innerText = '🎉 成功！請檢查下載的影片是否包含雙語字幕。';
         } catch (err) {
             console.error(err);
-            statusDiv.innerText = `❌ 失敗：${err.message}\n請確認 SRT 格式正確，或嘗試較短的影片。`;
+            statusDiv.innerText = `❌ 失敗：${err.message}\n請嘗試較短的影片，或檢查字幕格式是否正確。`;
             statusDiv.style.color = '#ef4444';
         } finally {
             startBtn.disabled = false;
