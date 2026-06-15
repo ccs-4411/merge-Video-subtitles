@@ -438,7 +438,7 @@
             // 並行讀取檔案
             const [videoData, srtContent] = await Promise.all([
                 fetchFile(videoFile),
-                videoFile.text()
+                srtFile.text()
             ]);
 
             // 寫入視頻
