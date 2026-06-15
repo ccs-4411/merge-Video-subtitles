@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎬 影片與雙語字幕合併工具 (網頁版)</title>
+    <title>🎬 影片與雙語字幕合併工具 (高相容性版)</title>
     
     <script src="coi-serviceworker.js"></script>
     
@@ -83,7 +83,7 @@
 
 <div class="container">
     <h1>🎬 影片與雙語字幕合併工具</h1>
-    <p>將雙語 SRT 字幕永久燒錄進影片中。所有壓制過程皆在瀏覽器本地完成，不消耗任何上傳流量，保護影片隱私！</p>
+    <p>將您的雙語 SRT 字幕永久燒錄進影片中。所有壓制過程皆在瀏覽器本地完成，不消耗任何上傳流量，保護影片隱私！</p>
     
     <div class="upload-group">
         <label class="btn" for="videoUploader">📁 1. 選擇影片檔案 (MP4/MKV/MOV)</label>
@@ -106,7 +106,9 @@
 
 <script>
     const { createFFmpeg, fetchFile } = FFmpeg;
-    const ffmpeg = createFFmpeg({ log: false });
+    
+    // 開啟內建 log 紀錄，若在 F12 主控台發現錯誤可以更容易排查
+    const ffmpeg = createFFmpeg({ log: true });
 
     const videoUploader = document.getElementById('videoUploader');
     const srtUploader = document.getElementById('srtUploader');
@@ -118,6 +120,7 @@
     let videoFile = null;
     let srtFile = null;
 
+    // 1. 初始化系統並加載核心
     async function init() {
         status.innerText = '正在初始化 FFmpeg 核心，請稍候...';
         try {
@@ -125,12 +128,13 @@
             status.innerText = '✅ 系統就緒！請先選取影片與字幕檔案。';
             status.style.color = '#10b981';
         } catch (e) {
-            status.innerText = '❌ 核心載入失敗。\n請確保 coi-serviceworker.js 已成功上傳到 GitHub，並試著清除快取再試一次。';
+            status.innerText = '❌ 核心載入失敗。\n請確保 coi-serviceworker.js 已推送到 GitHub 且與 index.html 同目錄。\n並請使用 Chrome/Edge 開啟。';
             status.style.color = '#ef4444';
             console.error(e);
         }
     }
 
+    // 監聽檔案選擇
     videoUploader.addEventListener('change', (e) => {
         videoFile = e.target.files[0];
         if(videoFile) {
@@ -155,6 +159,7 @@
         }
     }
 
+    // 監聽 FFmpeg 進度
     ffmpeg.setProgress(({ ratio }) => {
         const percentage = Math.min(Math.max(Math.round(ratio * 100), 0), 100);
         progressBarFill.style.width = `${percentage}%`;
@@ -162,6 +167,7 @@
         status.style.color = '#0284c7';
     });
 
+    // 2. 開始轉檔
     startBtn.addEventListener('click', async () => {
         if (!videoFile || !srtFile) return;
 
@@ -172,28 +178,38 @@
         status.innerText = '正在載入檔案並設定字型系統...';
         status.style.color = '#0f172a';
 
+        // 統一將內部檔名簡化，防範原始檔名包含特殊符號導致指令解析失敗
         const videoIn = 'input' + videoFile.name.substring(videoFile.name.lastIndexOf('.'));
         const srtIn = 'subtitles.srt';
         const videoOut = 'output_with_subtitles.mp4';
 
         try {
+            // 寫入檔案到虛擬記憶體
             ffmpeg.FS('writeFile', videoIn, await fetchFile(videoFile));
             ffmpeg.FS('writeFile', srtIn, await fetchFile(srtFile));
 
             status.innerText = '⏳ 初始化壓制引擎（大影片可能需要較長時間處理）...';
 
+            // ⚡ 核心修復：使用萬用高相容性參數組
+            // -vcodec libx264: 強制使用 H.264 視訊編碼
+            // -acodec aac: 強制轉為 AAC 音訊（放棄 copy，改為重編碼以阻絕音軌不相容問題）
+            // -pix_fmt yuv420p: 強制萬用色彩格式，確保壓出來的影片在任何手機與瀏覽器都能播放
+            // -preset superfast: 兼顧瀏覽器效能與穩定的編碼速度
             await ffmpeg.run(
                 '-i', videoIn,
                 '-vf', `subtitles=${srtIn}:force_style='FontSize=20,Outline=2,PrimaryColour=&HFFFFFF,BorderStyle=1'`,
-                '-preset', 'ultrafast', 
-                '-c:a', 'copy', 
+                '-vcodec', 'libx264',
+                '-acodec', 'aac',
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'superfast',
                 videoOut
             );
 
             status.innerText = '🎉 字幕燒錄完成！正在準備下載影片...';
             status.style.color = '#10b981';
 
-            const data = ftmp.FS('readFile', videoOut);
+            // 從虛擬記憶體讀出成品 (修正了 ftmp 的打字錯誤)
+            const data = ffmpeg.FS('readFile', videoOut);
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
             
@@ -204,13 +220,14 @@
             a.click();
             document.body.removeChild(a);
 
+            // 清理虛擬記憶體空間防止當機
             ffmpeg.FS('unlink', videoIn);
             ffmpeg.FS('unlink', srtIn);
             ffmpeg.FS('unlink', videoOut);
 
             status.innerText = '✅ 字幕合併成功！影片已自動下載。';
         } catch (err) {
-            status.innerText = '❌ 壓制失敗。原因可能是：影片過大導致瀏覽器記憶體崩潰，或格式不相容。';
+            status.innerText = '❌ 壓制失敗。\n原因可能是：影片過大導致瀏覽器記憶體崩潰、SRT 字幕不是 UTF-8 編碼、或是格式不相容。';
             status.style.color = '#ef4444';
             console.error(err);
         } finally {
@@ -218,12 +235,6 @@
             startBtn.classList.remove('btn-disabled');
         }
     });
-
-    init();
-</script>
-
-</body>
-</html>
 
     init();
 </script>
