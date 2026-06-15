@@ -302,15 +302,22 @@
         
         box.addEventListener('dragover', e => {
             e.preventDefault();
+            e.stopPropagation();
             box.classList.add('drag-over');
         });
         box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
         box.addEventListener('drop', e => {
             e.preventDefault();
+            e.stopPropagation();
             box.classList.remove('drag-over');
             if (e.dataTransfer.files.length) {
-                input.files = e.dataTransfer.files;
-                input.dispatchEvent(new Event('change'));
+                // 修復：使用 DataTransfer 正確設置文件
+                const dt = new DataTransfer();
+                for (let i = 0; i < e.dataTransfer.files.length; i++) {
+                    dt.items.add(e.dataTransfer.files[i]);
+                }
+                input.files = dt.files;
+                input.dispatchEvent(new Event('change', { bubbles: true }));
             }
         });
         box.addEventListener('click', () => input.click());
@@ -431,7 +438,7 @@
             // 並行讀取檔案
             const [videoData, srtContent] = await Promise.all([
                 fetchFile(videoFile),
-                srtFile.text()
+                videoFile.text()
             ]);
 
             // 寫入視頻
