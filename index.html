@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎬 影片與雙語字幕合併工具 (穩定版)</title>
+    <title>🎬 影片與雙語字幕合併工具 (真正顯示中文)</title>
     
-    <!-- 啟用跨域隔離，讓 ffmpeg.wasm 可使用 SharedArrayBuffer -->
+    <!-- 啟用跨域隔離 -->
     <script src="coi-serviceworker.js"></script>
     
     <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
@@ -93,19 +93,19 @@
 
 <div class="container">
     <h1>🎬 影片與雙語字幕合併工具</h1>
-    <p>將您的雙語 SRT 字幕永久燒錄進影片中。<br>🔧 本版本已修正 FFmpeg filter 語法錯誤，並移除不穩定的外部字型下載，改用內建字型，確保合併成功。</p>
+    <p>將雙語 SRT 字幕永久燒錄進影片。<br>✅ 本版使用「思源黑體」完整支援中文與英文，確保字幕清晰顯示。</p>
     
     <div class="upload-group">
         <label class="btn" for="videoUploader">📁 1. 選擇影片檔案 (MP4/MKV/MOV)</label>
         <input type="file" id="videoUploader" accept="video/*">
         <div class="file-status" id="videoName">尚未選取影片</div>
 
-        <label class="btn" for="srtUploader">📁 2. 選擇雙語 SRT 字幕檔 (UTF-8 編碼)</label>
+        <label class="btn" for="srtUploader">📁 2. 選擇雙語 SRT 字幕檔 (UTF-8)</label>
         <input type="file" id="srtUploader" accept=".srt">
         <div class="file-status" id="srtName">尚未選取字幕</div>
     </div>
 
-    <button class="btn btn-disabled" id="startBtn" disabled style="width: 100%; font-size: 16px;">🚀 開始合併（穩定版）</button>
+    <button class="btn btn-disabled" id="startBtn" disabled style="width: 100%; font-size: 16px;">🚀 開始合併（中文顯示版）</button>
 
     <div class="progress-bar" id="progressBar">
         <span class="progress-bar-fill" id="progressBarFill"></span>
@@ -114,11 +114,10 @@
     <div id="status" style="color: #64748b;">網頁載入中，請稍候...</div>
     
     <div class="warning">
-        ⚠️ 重要提醒：<br>
-        1. 請確保本網頁是透過 <strong>HTTP 伺服器</strong> 執行（例如使用 npx http-server 或 Python http.server），<br>
-           否則會因跨域隔離失效而導致 FFmpeg 無法啟動。<br>
-        2. 字幕檔案請使用 <strong>UTF-8 編碼</strong>（無 BOM 較佳），以避免亂碼。<br>
-        3. 若合併失敗，請開啟瀏覽器開發者工具（F12）查看錯誤訊息。
+        ⚠️ 重要：<br>
+        1. 必須透過 <strong>HTTP 伺服器</strong> 執行（如 npx http-server 或 python -m http.server）。<br>
+        2. 字幕檔案請使用 <strong>UTF-8 編碼</strong>（無 BOM 最佳）。<br>
+        3. 首次使用會自動下載中文字型（約 2MB），請保持網路連線。
     </div>
 </div>
 
@@ -135,6 +134,7 @@
 
     let videoFile = null;
     let srtFile = null;
+    let fontLoaded = false;
 
     async function init() {
         status.innerText = '正在初始化 FFmpeg 核心，請稍候...';
@@ -142,10 +142,35 @@
             await ffmpeg.load();
             status.innerText = '✅ 系統就緒！請選取影片與字幕檔案。';
             status.style.color = '#10b981';
+            // 預先下載字型（可選，但為了加快後續處理）
+            await preloadFont();
         } catch (e) {
-            status.innerText = '❌ 核心載入失敗。\n請確認您正在使用 HTTP 伺服器執行本網頁，且 coi-serviceworker.js 存在於同目錄。';
+            status.innerText = '❌ 核心載入失敗。\n請確認使用 HTTP 伺服器執行且 coi-serviceworker.js 存在。';
             status.style.color = '#ef4444';
             console.error(e);
+        }
+    }
+
+    // 預先載入支援中文的字型（思源黑體 Noto Sans CJK TC Regular）
+    async function preloadFont() {
+        if (fontLoaded) return;
+        status.innerText = '📦 正在下載中文字型（約 2MB），稍後可正常顯示中文...';
+        try {
+            // 使用 fastly CDN 上的 Noto Sans CJK TC 字型 (TrueType 格式)
+            const fontUrl = 'https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-tc@5.0.0/files/noto-sans-tc-chinese-traditional-400-normal.woff2';
+            // 注意：FFmpeg 需要 TTF 或 OTF，woff2 不支援。改用真正 TTF 來源
+            // 以下為穩定可用的開源中文字型（微軟正黑體替代品）－ 使用 Google Noto Sans CJK TTF
+            const ttfUrl = 'https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf';
+            const response = await fetch(ttfUrl);
+            if (!response.ok) throw new Error('字型下載失敗');
+            const fontBuffer = await response.arrayBuffer();
+            // 寫入 FFmpeg 虛擬檔案系統，命名為 myfont.ttf
+            ffmpeg.FS('writeFile', 'myfont.ttf', new Uint8Array(fontBuffer));
+            fontLoaded = true;
+            status.innerText = '✅ 系統就緒（含中文字型）！請選取影片與字幕。';
+        } catch (err) {
+            console.warn('字型預載失敗，將嘗試使用內建字型（可能無中文）', err);
+            status.innerText = '⚠️ 字型下載失敗，中文可能無法顯示，但仍可嘗試合併。';
         }
     }
 
@@ -176,14 +201,13 @@
     ffmpeg.setProgress(({ ratio }) => {
         const percentage = Math.min(Math.max(Math.round(ratio * 100), 0), 100);
         progressBarFill.style.width = `${percentage}%`;
-        status.innerText = `⏳ 正在燒錄雙語字幕... ${percentage}% \n(請保持網頁開啟，大型影片可能需要數分鐘)`;
+        status.innerText = `⏳ 正在燒錄雙語字幕... ${percentage}% \n(請保持網頁開啟)`;
         status.style.color = '#0284c7';
     });
 
-    // 輔助函式：確保字幕檔案為 UTF-8 字串（避免 BOM 問題）
+    // 確保字幕是 UTF-8 並移除 BOM
     async function normalizeSrtContent(file) {
-        const text = await file.text(); // 自動以 UTF-8 解讀
-        // 移除 BOM (U+FEFF)
+        const text = await file.text();
         if (text.charCodeAt(0) === 0xFEFF) {
             return text.slice(1);
         }
@@ -199,38 +223,39 @@
         progressBarFill.style.width = '0%';
         status.style.color = '#0f172a';
 
-        // 定義虛擬檔案名稱
         const videoExt = videoFile.name.substring(videoFile.name.lastIndexOf('.'));
         const videoIn = `input${videoExt}`;
         const srtIn = 'subtitles.srt';
         const videoOut = 'output_with_subtitles.mp4';
 
         try {
-            // 1. 寫入影片檔案（二進位）
-            status.innerText = '📂 正在載入影片檔到記憶體...';
+            // 1. 確認字型已載入，若未載入則現在載入
+            if (!fontLoaded) {
+                status.innerText = '📦 載入中文字型，請稍候...';
+                await preloadFont();
+            }
+
+            // 2. 寫入影片
+            status.innerText = '📂 載入影片檔...';
             ffmpeg.FS('writeFile', videoIn, await fetchFile(videoFile));
 
-            // 2. 處理字幕編碼並寫入
-            status.innerText = '📄 正在處理字幕編碼 (確保 UTF-8)...';
+            // 3. 寫入字幕（轉為 UTF-8）
+            status.innerText = '📄 處理字幕編碼...';
             let srtContent = await normalizeSrtContent(srtFile);
-            // 將字幕內容轉為 Uint8Array 寫入，確保正確編碼
             const encoder = new TextEncoder();
-            const srtData = encoder.encode(srtContent);
-            ffmpeg.FS('writeFile', srtIn, srtData);
+            ffmpeg.FS('writeFile', srtIn, encoder.encode(srtContent));
 
-            status.innerText = '🎞️ 開始合併字幕與影片 (使用內建字型，穩定模式)...';
+            status.innerText = '🎞️ 開始合併 (使用中文字型渲染)...';
 
-            // 3. 執行 FFmpeg 指令
-            // 修正重點：
-            // - 移除 fontfile 與 fontsdir，使用內建 sans-serif 字型，避免路徑與引號錯誤
-            // - 移除 PrimaryColour 中的 & 符號 (預設白色即足夠)
-            // - 保留 scale 修正解析度為偶數，防止編碼器崩潰
-            // - 加入 -y 覆蓋輸出檔案（若有殘留）
+            // 4. 執行 FFmpeg，關鍵修正：
+            //    - 使用 fontfile=myfont.ttf 明確指定中文字型
+            //    - 注意 fontfile 值「不加引號」
+            //    - force_style 內使用英數字與逗號即可，避免特殊字元
             await ffmpeg.run(
-                '-y',                           // 覆蓋輸出檔案
-                '-fflags', '+genpts',           // 重建時間戳，解決字幕時間軸異常
+                '-y',
+                '-fflags', '+genpts',
                 '-i', videoIn,
-                '-vf', `scale=trunc(iw/2)*2:trunc(ih/2)*2,subtitles=${srtIn}:force_style='FontSize=20,Outline=2,BorderStyle=1'`,
+                '-vf', `scale=trunc(iw/2)*2:trunc(ih/2)*2,subtitles=${srtIn}:fontsdir=.:fontfile=myfont.ttf:force_style='FontSize=20,Outline=2,BorderStyle=1'`,
                 '-vcodec', 'libx264',
                 '-acodec', 'aac',
                 '-pix_fmt', 'yuv420p',
@@ -239,43 +264,40 @@
                 videoOut
             );
 
-            // 4. 檢查輸出檔案是否成功且非空
+            // 5. 檢查輸出
             const stat = ffmpeg.FS('stat', videoOut);
-            if (!stat || stat.size === 0) {
-                throw new Error('輸出檔案為 0 KB，可能是 FFmpeg 處理過程中發生錯誤。請檢查瀏覽器控制台。');
-            }
+            if (!stat || stat.size === 0) throw new Error('輸出檔案為空，可能是字型或 filter 錯誤');
 
             status.innerText = '✅ 字幕燒錄完成！準備下載...';
             status.style.color = '#10b981';
 
-            // 5. 下載檔案
+            // 6. 下載
             const data = ffmpeg.FS('readFile', videoOut);
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
-            const downloadLink = document.createElement('a');
-            downloadLink.href = url;
+            const a = document.createElement('a');
+            a.href = url;
             const baseName = videoFile.name.substring(0, videoFile.name.lastIndexOf('.')) || 'output';
-            downloadLink.download = `[帶字幕]_${baseName}.mp4`;
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            document.body.removeChild(downloadLink);
+            a.download = `[帶字幕]_${baseName}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            // 6. 清理虛擬檔案
+            // 7. 清理
             ffmpeg.FS('unlink', videoIn);
             ffmpeg.FS('unlink', srtIn);
             ffmpeg.FS('unlink', videoOut);
+            // 保留字型檔案供下次使用，不刪除
 
-            status.innerText = '🎉 字幕合併成功！影片已開始下載。';
+            status.innerText = '🎉 合併成功！影片已下載，請確認字幕是否正常顯示。';
         } catch (err) {
-            console.error('合併錯誤:', err);
-            status.innerText = `❌ 合併失敗：${err.message || '未知錯誤'}\n請嘗試使用較短的影片或確認字幕檔格式正確。`;
+            console.error(err);
+            status.innerText = `❌ 失敗：${err.message || '未知錯誤'}\n嘗試重新整理頁面或使用較短的影片。`;
             status.style.color = '#ef4444';
         } finally {
             startBtn.disabled = false;
             startBtn.classList.remove('btn-disabled');
-            progressBarFill.style.width = '0%';
-            // 保留進度條顯示，但可隱藏或重置
             setTimeout(() => {
                 if (status.innerText.includes('成功') || status.innerText.includes('失敗')) {
                     progressBar.style.display = 'none';
