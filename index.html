@@ -3,9 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎬 影片與雙語字幕合併工具 (網頁版)</title>
-    <script src="coi-serviceworker.js"></script>
+    <title>🎬 影片與雙語字幕合併工具 (無相依單檔版)</title>
+    
+    <script>
+        if (typeof window !== 'undefined' && window.crossOriginIsolated === false && navigator.serviceWorker) {
+            // 建立動態 Service Worker 程式碼
+            const swCode = `
+                self.addEventListener("install", () => self.skipWaiting());
+                self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+                self.addEventListener("fetch", (event) => {
+                    if (event.request.cache === "only-if-cached" && event.request.mode !== "same-origin") return;
+                    event.respondWith(
+                        fetch(event.request).then((response) => {
+                            if (response.status === 0) return response;
+                            const newHeaders = new Headers(response.headers);
+                            newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+                            newHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
+                            return new Response(response.body, { status: response.status, statusText: response.statusText, headers: newHeaders });
+                        }).catch((e) => console.error(e))
+                    );
+                });
+            `;
+            const blob = new Blob([swCode], { type: "text/javascript" });
+            const swUrl = URL.createObjectURL(blob);
+            
+            navigator.serviceWorker.register(swUrl).then((registration) => {
+                registration.addEventListener("updatefound", () => location.reload());
+                if (registration.active && !navigator.serviceWorker.controller) location.reload();
+            });
+        }
+    </script>
+    
     <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    
     <style>
         body {
             font-family: 'Helvetica Neue', Helvetica, Arial, 'Microsoft JhengHei', sans-serif;
@@ -37,6 +67,7 @@
             margin-bottom: 25px;
         }
         .btn {
+            display: block;
             padding: 12px 20px;
             background-color: #0284c7;
             color: white;
@@ -45,15 +76,17 @@
             font-weight: 600;
             transition: all 0.2s;
             border: none;
+            box-sizing: border-box;
         }
         .btn:hover { background-color: #0369a1; }
         .btn-disabled {
             background-color: #cbd5e1 !important;
             cursor: not-allowed;
+            box-shadow: none !important;
         }
         input[type="file"] { display: none; }
-        .file-status { font-size: 13px; color: #64748b; margin-top: -10px; }
-        #status { margin-top: 25px; font-weight: 600; font-size: 15px; }
+        .file-status { font-size: 13px; color: #64748b; margin-top: -5px; margin-bottom: 5px; }
+        #status { margin-top: 25px; font-weight: 600; font-size: 15px; min-height: 40px; white-space: pre-line; }
         .progress-bar {
             width: 100%;
             background-color: #e2e8f0;
@@ -61,6 +94,7 @@
             border-radius: 9999px;
             margin-top: 20px;
             display: none;
+            box-sizing: border-box;
         }
         .progress-bar-fill {
             display: block;
@@ -68,6 +102,7 @@
             background-color: #10b981;
             border-radius: 9999px;
             width: 0%;
+            transition: width 0.1s linear;
         }
     </style>
 </head>
@@ -75,14 +110,14 @@
 
 <div class="container">
     <h1>🎬 影片與雙語字幕合併工具</h1>
-    <p>將您的雙語 SRT 字幕永久燒錄進影片中。所有壓制過程皆在您瀏覽器本地完成，不消耗任何上傳流量，保護影片隱私！</p>
+    <p>將雙語 SRT 字幕永久燒錄進影片中。所有壓制過程皆在瀏覽器本地完成，不消耗任何上傳流量，保護影片隱私！</p>
     
     <div class="upload-group">
-        <label class="btn" id="lblVideo">📁 1. 選擇影片檔案 (MP4/MKV/MOV)</label>
+        <label class="btn" for="videoUploader">📁 1. 選擇影片檔案 (MP4/MKV/MOV)</label>
         <input type="file" id="videoUploader" accept="video/*">
         <div class="file-status" id="videoName">尚未選取影片</div>
 
-        <label class="btn" id="lblSrt">📁 2. 選擇雙語 SRT 字幕檔</label>
+        <label class="btn" for="srtUploader">📁 2. 選擇雙語 SRT 字幕檔</label>
         <input type="file" id="srtUploader" accept=".srt">
         <div class="file-status" id="srtName">尚未選取字幕</div>
     </div>
@@ -98,10 +133,8 @@
 
 <script>
     const { createFFmpeg, fetchFile } = FFmpeg;
-    // 建立 FFmpeg 實例
     const ffmpeg = createFFmpeg({ log: false });
 
-    // DOM 元素
     const videoUploader = document.getElementById('videoUploader');
     const srtUploader = document.getElementById('srtUploader');
     const startBtn = document.getElementById('startBtn');
@@ -112,19 +145,19 @@
     let videoFile = null;
     let srtFile = null;
 
-    // 1. 初始化系統
     async function init() {
+        status.innerText = '正在安全環境下初始化 FFmpeg 核心...';
         try {
             await ffmpeg.load();
             status.innerText = '✅ 系統就緒！請先選取影片與字幕檔案。';
             status.style.color = '#10b981';
         } catch (e) {
-            status.innerText = '❌ 核心載入失敗，請確認同目錄下是否有 coi-serviceworker.js。';
+            status.innerText = '❌ 核心載入失敗。\n請試著開啟「無痕視窗」或更換為 Google Chrome / Edge 瀏覽器再試一次。';
             status.style.color = '#ef4444';
+            console.error(e);
         }
     }
 
-    // 監聽檔案選擇
     videoUploader.addEventListener('change', (e) => {
         videoFile = e.target.files[0];
         if(videoFile) {
@@ -149,15 +182,13 @@
         }
     }
 
-    // 監聽 FFmpeg 進度
     ffmpeg.setProgress(({ ratio }) => {
         const percentage = Math.min(Math.max(Math.round(ratio * 100), 0), 100);
         progressBarFill.style.width = `${percentage}%`;
-        status.innerText = `⏳ 正在努力壓制字幕中... ${percentage}% (影片越大時間越長)`;
+        status.innerText = `⏳ 正在努力壓制字幕中... ${percentage}% \n(請勿關閉網頁，影片越大需要越久時間)`;
         status.style.color = '#0284c7';
     });
 
-    // 2. 開始轉檔
     startBtn.addEventListener('click', async () => {
         if (!videoFile || !srtFile) return;
 
@@ -165,41 +196,30 @@
         startBtn.classList.add('btn-disabled');
         progressBar.style.display = 'block';
         progressBarFill.style.width = '0%';
-        status.innerText = '正在載入檔案並下載預設字型...';
+        status.innerText = '正在載入檔案並設定字型系統...';
         status.style.color = '#0f172a';
 
         const videoIn = 'input' + videoFile.name.substring(videoFile.name.lastIndexOf('.'));
         const srtIn = 'subtitles.srt';
         const videoOut = 'output_with_subtitles.mp4';
-        const fontName = 'font.ttf';
 
         try {
-            // 寫入影片與字幕
             ffmpeg.FS('writeFile', videoIn, await fetchFile(videoFile));
             ffmpeg.FS('writeFile', srtIn, await fetchFile(srtFile));
 
-            // ⚡ 關鍵：從網路載入一個極輕量化的開源中文字型（這裡用思源黑體的輕量裁剪版，利於網頁載入）
-            // 為了方便演示，這裡使用 cdn 上的輕量字型。若要絕對穩定，可將字型檔下載並放在你自己的 GitHub
-            status.innerText = '正在加載中文字型系統（僅首次需要）...';
-            ffmpeg.FS('writeFile', fontName, await fetchFile('https://fastly.jsdelivr.net/npm/@fontsource/noto-sans-tc/files/noto-sans-tc-cyrillic-400-normal.woff'));
-
             status.innerText = '⏳ 初始化壓制引擎（大影片可能需要較長時間處理）...';
 
-            // 執行燒錄指令：
-            // 使用 subtitles 濾鏡，並強制指定剛才下載的 font.ttf
-            // 為了提升瀏覽器端的轉檔速度，使用 -preset ultrafast (極速編碼)
             await ffmpeg.run(
                 '-i', videoIn,
-                '-vf', `subtitles=${srtIn}:fontsdir=/:fontname=Noto Sans TC`,
+                '-vf', `subtitles=${srtIn}:force_style='FontSize=20,Outline=2,PrimaryColour=&HFFFFFF,BorderStyle=1'`,
                 '-preset', 'ultrafast', 
-                '-c:a', 'copy', // 音訊直接複製，不重新編碼以省時間
+                '-c:a', 'copy', 
                 videoOut
             );
 
             status.innerText = '🎉 字幕燒錄完成！正在準備下載影片...';
             status.style.color = '#10b981';
 
-            // 取出影片
             const data = ffmpeg.FS('readFile', videoOut);
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
@@ -211,7 +231,6 @@
             a.click();
             document.body.removeChild(a);
 
-            // 清理虛擬記憶體
             ffmpeg.FS('unlink', videoIn);
             ffmpeg.FS('unlink', srtIn);
             ffmpeg.FS('unlink', videoOut);
@@ -226,6 +245,12 @@
             startBtn.classList.remove('btn-disabled');
         }
     });
+
+    init();
+</script>
+
+</body>
+</html>
 
     init();
 </script>
