@@ -132,6 +132,7 @@
         .status-info { background: #1e40af; color: #93c5fd; }
         .status-success { background: #065f46; color: #10b981; }
         .status-error { background: #7c2d12; color: #fb923c; }
+        .status-warning { background: #92400e; color: #fbbf24; }
         .progress-bar {
             width: 100%;
             height: 8px;
@@ -180,6 +181,29 @@
             margin-top: 10px;
             color: #93c5fd;
         }
+        .init-status {
+            text-align: center;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .init-loading {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid #3b82f6;
+            color: #93c5fd;
+        }
+        .init-ready {
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid #10b981;
+            color: #10b981;
+        }
+        .spinner {
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
         @media (max-width: 768px) {
             .upload-area { grid-template-columns: 1fr; }
             .controls { flex-direction: column; }
@@ -192,6 +216,10 @@
 <div class="container">
     <h1>🎬 影片字幕合併工具</h1>
     <div class="subtitle">⚡ 極速版 - 快速、簡單、完全免費</div>
+    
+    <div class="init-status init-loading" id="initStatus">
+        <span class="spinner">⚙️</span> 初始化中... 正在加載 FFmpeg
+    </div>
     
     <div class="upload-area">
         <div class="upload-box" id="videoBox">
@@ -223,7 +251,7 @@
                 <option value="high">🎬 高質量</option>
             </select>
         </div>
-        <button class="btn-primary" id="startBtn">▶️ 開始合併</button>
+        <button class="btn-primary" id="startBtn" disabled>▶️ 開始合併</button>
         <button class="btn-cancel" id="cancelBtn">⏹️ 取消</button>
     </div>
 
@@ -249,7 +277,8 @@
 <script async src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
 <script>
     const { FFmpeg, fetchFile } = FFmpeg;
-    const ffmpeg = new FFmpeg.FFmpeg();
+    let ffmpeg;
+    let ffmpegReady = false;
 
     let videoFile, srtFile;
     let isProcessing = false;
@@ -271,7 +300,8 @@
         log: document.getElementById('log'),
         progressBar: document.getElementById('progressBar'),
         progressFill: document.getElementById('progressFill'),
-        timeEstimate: document.getElementById('timeEstimate')
+        timeEstimate: document.getElementById('timeEstimate'),
+        initStatus: document.getElementById('initStatus')
     };
 
     const qualityPresets = {
@@ -295,6 +325,39 @@
         }
     };
 
+    // 初始化 FFmpeg
+    async function initFFmpeg() {
+        try {
+            ffmpeg = new FFmpeg.FFmpeg();
+            
+            // 添加超時機制
+            const loadPromise = ffmpeg.load();
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('FFmpeg 加載超時（>30秒），請檢查網路連接')), 30000)
+            );
+            
+            await Promise.race([loadPromise, timeoutPromise]);
+            
+            ffmpegReady = true;
+            elements.initStatus.className = 'init-status init-ready';
+            elements.initStatus.innerHTML = '✅ 應用已就緒，可以開始合併了';
+            elements.startBtn.disabled = false;
+            addLog('FFmpeg 初始化成功 ✓', 'success');
+            
+            // 3 秒後隱藏初始化提示
+            setTimeout(() => {
+                elements.initStatus.style.display = 'none';
+            }, 3000);
+            
+        } catch (err) {
+            console.error('FFmpeg 初始化失敗:', err);
+            elements.initStatus.className = 'init-status status-error';
+            elements.initStatus.innerHTML = `❌ 初始化失敗: ${err.message}<br><small>提示：請刷新頁面重試，或檢查網路連接</small>`;
+            addLog(`初始化失敗: ${err.message}`, 'error');
+            elements.startBtn.disabled = true;
+        }
+    }
+
     // 拖拽上傳
     ['videoBox', 'srtBox'].forEach(boxId => {
         const box = document.getElementById(boxId);
@@ -311,7 +374,6 @@
             e.stopPropagation();
             box.classList.remove('drag-over');
             if (e.dataTransfer.files.length) {
-                // 修復：使用 DataTransfer 正確設置文件
                 const dt = new DataTransfer();
                 for (let i = 0; i < e.dataTransfer.files.length; i++) {
                     dt.items.add(e.dataTransfer.files[i]);
@@ -363,7 +425,7 @@
         return estimates[quality] || '5-10 分鐘';
     }
 
-    // SRT → ASS 轉換 (優化版)
+    // SRT → ASS 轉換
     function srtToAss(srtContent, fontSize = 22) {
         let ass = '[Script Info]\nTitle: Subtitles\nScriptType: v4.00+\n\n';
         ass += '[V4+ Styles]\n';
@@ -378,7 +440,6 @@
             return `${parseInt(h)}:${m}:${s}.${ms.substring(0, 2)}`;
         };
 
-        // 優化: 使用正則表達式一次性分割
         const subtitleRegex = /(\d+)\n(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\n|$)/g;
         let match;
         while ((match = subtitleRegex.exec(srtContent)) !== null) {
@@ -391,17 +452,13 @@
         return ass;
     }
 
-    // 預加載 FFmpeg
-    async function preloadFFmpeg() {
-        if (!ffmpeg.isLoaded()) {
-            addLog('預加載 FFmpeg 核心...');
-            await ffmpeg.load();
-            addLog('FFmpeg 核心已快速緩存');
-        }
-    }
-
     // 開始處理
     elements.startBtn.addEventListener('click', async () => {
+        if (!ffmpegReady) {
+            updateStatus('⚠️ FFmpeg 還在初始化，請稍候...', 'warning');
+            return;
+        }
+        
         if (!videoFile || !srtFile) {
             updateStatus('❌ 請選擇影片和字幕檔', 'error');
             return;
@@ -426,33 +483,22 @@
             addLog(`視頻: ${videoFile.name}`);
             addLog(`字幕: ${srtFile.name}`);
 
-            // 並行加載 FFmpeg 和處理文件
-            if (!ffmpeg.isLoaded()) {
-                updateStatus('📦 首次使用，下載 FFmpeg (30MB)...');
-                await ffmpeg.load();
-                addLog('FFmpeg 核心加載完成');
-            }
-
             updateStatus('📁 讀取和處理檔案...');
             
-            // 並行讀取檔案
             const [videoData, srtContent] = await Promise.all([
                 fetchFile(videoFile),
                 srtFile.text()
             ]);
 
-            // 寫入視頻
             addLog('寫入視頻檔案...');
             await ffmpeg.writeFile('input', videoData);
 
-            // 處理和寫入字幕
             updateStatus('✍️ 轉換字幕格式...');
             let cleanedSrt = srtContent.charCodeAt(0) === 0xFEFF ? srtContent.slice(1) : srtContent;
             const assContent = srtToAss(cleanedSrt, elements.fontSize.value);
             await ffmpeg.writeFile('sub.ass', new TextEncoder().encode(assContent));
             addLog('字幕轉換完成');
 
-            // FFmpeg 處理
             updateStatus(`🎬 合併中 (${preset.label})...`);
             addLog('執行 FFmpeg 編碼...');
 
@@ -462,7 +508,6 @@
                 updateStatus(`🎬 處理中... ${percent}%`);
             });
 
-            // 優化的 FFmpeg 命令
             const ffmpegArgs = [
                 '-i', 'input',
                 '-vf', `ass=sub.ass${preset.scale ? `,scale=${preset.scale}` : ''}`,
@@ -478,12 +523,10 @@
             await ffmpeg.exec(ffmpegArgs);
             addLog('編碼完成');
 
-            // 檢驗輸出
             updateStatus('💾 準備下載...');
             const data = await ffmpeg.readFile('output.mp4');
             if (!data || data.length === 0) throw new Error('輸出檔案為空');
 
-            // 下載
             const blob = new Blob([data.buffer], { type: 'video/mp4' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -492,7 +535,6 @@
             a.click();
             URL.revokeObjectURL(url);
 
-            // 清理
             await ffmpeg.deleteFile('input');
             await ffmpeg.deleteFile('sub.ass');
             await ffmpeg.deleteFile('output.mp4');
@@ -530,9 +572,8 @@
         }
     });
 
-    // 初始化
-    addLog('應用已加載，準備就緒 ✓', 'success');
-    addLog('💡 提示: 優化後平均速度提升 50-70%', 'warning');
+    // 初始化時自動加載 FFmpeg
+    initFFmpeg();
 </script>
 </body>
 </html>
