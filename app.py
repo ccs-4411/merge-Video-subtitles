@@ -15,7 +15,7 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 TEMP_FILE_EXPIRE_HOURS = 6
 PREVIEW_SECONDS = 120
-
+FONT_NAME = "Noto Sans CJK TC"
 
 # =========================================================
 # 背景清理舊暫存檔
@@ -56,7 +56,7 @@ def start_background_cleanup():
 
 
 # =========================================================
-# 檢查 ffmpeg / ffprobe
+# ffmpeg / ffprobe 檢查
 # =========================================================
 def check_ffmpeg_tools():
     ffmpeg_path = shutil.which("ffmpeg")
@@ -90,6 +90,27 @@ def check_ffmpeg_tools():
 
 
 # =========================================================
+# Gradio File 路徑標準化
+# =========================================================
+def normalize_gradio_file_path(file_obj):
+    if file_obj is None:
+        return None
+
+    if isinstance(file_obj, str):
+        return file_obj
+
+    if isinstance(file_obj, dict):
+        for key in ["name", "path"]:
+            if key in file_obj and file_obj[key]:
+                return file_obj[key]
+
+    if hasattr(file_obj, "name"):
+        return file_obj.name
+
+    return str(file_obj)
+
+
+# =========================================================
 # 影片解析度偵測
 # =========================================================
 def get_video_height(video_path):
@@ -117,77 +138,149 @@ def get_video_height(video_path):
 
 
 # =========================================================
-# 字幕清理
+# 字幕文字清理（只給 SRT 用）
 # =========================================================
-def clean_and_prepare_srt(input_sub_path, output_sub_path):
+def clean_subtitle_text_line(line: str) -> str:
+    line = re.sub(r"<[^>]+>", "", line)
+    line = re.sub(r"\{[^}]+\}", "", line)
+    return line
+
+
+def clean_srt_file(input_sub_path, output_sub_path):
     """
-    移除字幕中的 HTML 標籤與 {xxx} 樣式
-    注意：
-    - 若上傳的是 ASS，這樣做會把 ASS 樣式清掉
-    - 如果你之後想保留 ASS 樣式，可以改成只清理 .srt
+    只清理 SRT，不處理 ASS
     """
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
 
-        cleaned_lines = []
-        for line in lines:
-            line = re.sub(r"<[^>]+>", "", line)
-            line = re.sub(r"\{[^}]+\}", "", line)
-            cleaned_lines.append(line)
+        cleaned_lines = [clean_subtitle_text_line(line) for line in lines]
 
         with open(output_sub_path, "w", encoding="utf-8") as f:
             f.writelines(cleaned_lines)
 
         return True
     except Exception as e:
-        print(f"字幕純淨化失敗: {e}")
+        print(f"SRT 清理失敗: {e}")
         return False
 
 
 # =========================================================
-# 建立 subtitles filter
+# 字幕內容判斷：是否包含中日韓字元
 # =========================================================
-def build_subtitle_filter(subtitle_path, font_size, margin_v):
+def contains_cjk(text: str) -> bool:
+    return re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text) is not None
+
+
+def detect_subtitle_mode(subtitle_path: str) -> str:
+    """
+    回傳:
+    - 'cjk'   : 中文字幕 / 雙語字幕 / 含中日韓字
+    - 'latin' : 純外文字幕
+    """
+    try:
+        with open(subtitle_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        content = clean_subtitle_text_line(content)
+
+        if contains_cjk(content):
+            return "cjk"
+        return "latin"
+
+    except Exception as e:
+        print(f"字幕類型判斷失敗，預設使用 cjk。錯誤: {e}")
+        return "cjk"
+
+
+# =========================================================
+# 位置 / 品質參數
+# =========================================================
+def get_alignment_code(position: str) -> int:
+    """
+    ASS Alignment:
+    2 = 底部置中
+    5 = 中間置中
+    8 = 上方置中
+    """
+    mapping = {
+        "底部": 2,
+        "中間": 5,
+        "上方": 8
+    }
+    return mapping.get(position, 2)
+
+
+def get_quality_params(quality: str):
+    """
+    回傳 ffmpeg 視訊參數
+    """
+    if quality == "快速":
+        return {
+            "preset": "veryfast",
+            "crf": "25"
+        }
+    elif quality == "高品質":
+        return {
+            "preset": "medium",
+            "crf": "19"
+        }
+    else:  # 標準
+        return {
+            "preset": "fast",
+            "crf": "22"
+        }
+
+
+# =========================================================
+# 建立 subtitles filter（SRT 用）
+# =========================================================
+def build_srt_subtitle_filter(
+    subtitle_path,
+    font_size,
+    margin_v,
+    alignment=2,
+    outline=1.0,
+    shadow=0
+):
     safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
 
     style = (
-        f"Fontname=Noto Sans CJK TC,"
+        f"Fontname={FONT_NAME},"
         f"FontSize={font_size},"
         f"BorderStyle=1,"
-        f"Outline=1.0,"
-        f"Shadow=0,"
-        f"MarginV={margin_v}"
+        f"Outline={outline},"
+        f"Shadow={shadow},"
+        f"MarginV={margin_v},"
+        f"Alignment={alignment}"
     )
 
     return f"subtitles='{safe_sub_path}':force_style='{style}'"
 
 
 # =========================================================
-# Gradio File 路徑標準化
+# 建立 ASS filter（保留 ASS 原樣式）
 # =========================================================
-def normalize_gradio_file_path(file_obj):
-    if file_obj is None:
-        return None
-
-    if isinstance(file_obj, str):
-        return file_obj
-
-    if isinstance(file_obj, dict):
-        for key in ["name", "path"]:
-            if key in file_obj and file_obj[key]:
-                return file_obj[key]
-
-    if hasattr(file_obj, "name"):
-        return file_obj.name
-
-    return str(file_obj)
+def build_ass_subtitle_filter(subtitle_path):
+    safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
+    return f"ass='{safe_sub_path}'"
 
 
 # =========================================================
 # 核心：影片與字幕合併
 # =========================================================
-def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
+def merge_video_subtitle(
+    video_path,
+    subtitle_path,
+    cn_size,
+    en_size,
+    subtitle_position,
+    outline_size,
+    shadow_size,
+    margin_bottom,
+    quality_mode,
+    preview_mode=False
+):
     subtitle_path = normalize_gradio_file_path(subtitle_path)
 
     if not video_path or not subtitle_path:
@@ -202,41 +295,95 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     cleanup_old_temp_files()
     task_id = str(uuid.uuid4())
 
-    cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
-
-    final_sub_path = subtitle_path
-
-    if sub_ext in [".srt", ".ass"]:
-        if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
-            final_sub_path = cleaned_sub_path
-        else:
-            final_sub_path = subtitle_path
 
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
-    # 智能縮放
+    # =====================================================
+    # 影片解析度縮放
+    # =====================================================
     video_height = get_video_height(video_path)
     scale_factor = video_height / 1080.0
 
-    # 目前仍沿用你的邏輯：主要使用 cn_size
-    final_cn_size = max(int(cn_size * scale_factor), 8)
-    final_margin_v = max(int(15 * scale_factor), 6)
+    # =====================================================
+    # 品質設定
+    # =====================================================
+    quality_params = get_quality_params(quality_mode)
+    preset = quality_params["preset"]
+    crf = quality_params["crf"]
 
-    video_filter = build_subtitle_filter(
-        subtitle_path=final_sub_path,
-        font_size=final_cn_size,
-        margin_v=final_margin_v
-    )
+    # =====================================================
+    # ASS 與 SRT 分流
+    # =====================================================
+    subtitle_mode_text = ""
+    font_info_text = ""
+    final_sub_path = subtitle_path
+
+    if sub_ext == ".ass":
+        # ASS：保留原樣式
+        video_filter = build_ass_subtitle_filter(subtitle_path)
+        subtitle_mode_text = "ASS 字幕（保留原樣式）"
+        font_info_text = "ASS 模式下沿用字幕檔內建樣式"
+
+    else:
+        # SRT：清理後再套用 force_style
+        cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
+        if clean_srt_file(subtitle_path, cleaned_sub_path):
+            final_sub_path = cleaned_sub_path
+        else:
+            final_sub_path = subtitle_path
+
+        subtitle_mode = detect_subtitle_mode(final_sub_path)
+
+        if subtitle_mode == "latin":
+            base_font_size = en_size
+            subtitle_mode_text = "純外文字幕"
+        else:
+            base_font_size = cn_size
+            subtitle_mode_text = "中文字幕 / 雙語字幕"
+
+        final_font_size = max(int(base_font_size * scale_factor), 8)
+
+        # 上方 / 中間 時 MarginV 沒那麼重要，但保留給底部模式使用
+        final_margin_v = max(int(margin_bottom * scale_factor), 0)
+
+        alignment_code = get_alignment_code(subtitle_position)
+
+        video_filter = build_srt_subtitle_filter(
+            subtitle_path=final_sub_path,
+            font_size=final_font_size,
+            margin_v=final_margin_v,
+            alignment=alignment_code,
+            outline=outline_size,
+            shadow=shadow_size
+        )
+
+        font_info_text = (
+            f"字幕判定: {subtitle_mode_text}\n"
+            f"套用基準字體: {base_font_size}\n"
+            f"實際輸出字體: {final_font_size}px"
+        )
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
+
     info_msg = (
         f"{mode_text}\n"
-        f"影片高度: {video_height}px。\n"
-        f"套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
+        f"影片高度: {video_height}px\n"
+        f"字幕位置: {subtitle_position}\n"
+        f"邊框粗細: {outline_size}\n"
+        f"陰影大小: {shadow_size}\n"
+        f"底部距離: {margin_bottom}\n"
+        f"輸出品質: {quality_mode}\n"
+        f"字幕模式: {subtitle_mode_text}\n"
     )
 
+    if font_info_text:
+        info_msg += font_info_text
+
+    # =====================================================
+    # FFmpeg 命令
+    # =====================================================
     cmd = [
         "ffmpeg",
         "-y",
@@ -249,15 +396,15 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     cmd.extend([
         "-vf", video_filter,
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "22",
+        "-preset", preset,
+        "-crf", crf,
         "-c:a", "copy",
         output_path
     ])
 
     print("\n========== FFmpeg 執行開始 ==========")
     print("影片路徑：", video_path)
-    print("字幕路徑：", subtitle_path)
+    print("字幕原始路徑：", subtitle_path)
     print("實際使用字幕：", final_sub_path)
     print("輸出路徑：", output_path)
     print("FFmpeg 命令：")
@@ -277,11 +424,14 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             print("FFmpeg 錯誤日誌：\n", process.stderr)
             return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
 
-        if os.path.exists(cleaned_sub_path):
-            try:
-                os.remove(cleaned_sub_path)
-            except Exception:
-                pass
+        # 成功後清理中間 srt
+        if sub_ext != ".ass":
+            cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
+            if os.path.exists(cleaned_sub_path):
+                try:
+                    os.remove(cleaned_sub_path)
+                except Exception:
+                    pass
 
         if not os.path.exists(output_path):
             return None, "❌ FFmpeg 看似成功，但找不到輸出檔案。"
@@ -298,12 +448,34 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 # =========================================================
 # 按鈕包裝
 # =========================================================
-def handle_full_merge(video, subtitle, cn_sz, en_sz):
-    return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=False)
+def handle_full_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality):
+    return merge_video_subtitle(
+        video_path=video,
+        subtitle_path=subtitle,
+        cn_size=cn_sz,
+        en_size=en_sz,
+        subtitle_position=pos,
+        outline_size=outline,
+        shadow_size=shadow,
+        margin_bottom=margin,
+        quality_mode=quality,
+        preview_mode=False
+    )
 
 
-def handle_preview_merge(video, subtitle, cn_sz, en_sz):
-    return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=True)
+def handle_preview_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality):
+    return merge_video_subtitle(
+        video_path=video,
+        subtitle_path=subtitle,
+        cn_size=cn_sz,
+        en_size=en_sz,
+        subtitle_position=pos,
+        outline_size=outline,
+        shadow_size=shadow,
+        margin_bottom=margin,
+        quality_mode=quality,
+        preview_mode=True
+    )
 
 
 # =========================================================
@@ -317,7 +489,11 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3")
+    gr.Markdown(
+        "支援：**SRT / ASS**、**預覽 2 分鐘**、**正式完整輸出**、"
+        "**中文/外文分開字級**、**字幕位置 / 邊框 / 陰影 / 品質設定**。"
+    )
 
     with gr.Row():
         with gr.Column():
@@ -337,8 +513,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     maximum=60,
                     value=20,
                     step=1,
-                    label="中文/雙語字幕基準大小",
-                    info="以 1080p 為基礎的中文尺寸（預設 20）"
+                    label="中文 / 雙語字幕基準大小",
+                    info="字幕中含有中文、日文、韓文時優先使用"
                 )
 
                 en_size_input = gr.Slider(
@@ -347,8 +523,47 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     value=12,
                     step=1,
                     label="純外文字幕基準大小",
-                    info="目前先保留參數，後續可擴充自動判斷純英文字幕尺寸"
+                    info="字幕為純英文 / 外文時使用"
                 )
+
+            with gr.Row():
+                subtitle_position_input = gr.Dropdown(
+                    choices=["底部", "中間", "上方"],
+                    value="底部",
+                    label="字幕位置"
+                )
+
+                quality_input = gr.Dropdown(
+                    choices=["快速", "標準", "高品質"],
+                    value="標準",
+                    label="輸出品質"
+                )
+
+            with gr.Row():
+                outline_input = gr.Slider(
+                    minimum=0,
+                    maximum=5,
+                    value=1.0,
+                    step=0.1,
+                    label="字幕邊框粗細"
+                )
+
+                shadow_input = gr.Slider(
+                    minimum=0,
+                    maximum=5,
+                    value=0,
+                    step=0.1,
+                    label="字幕陰影大小"
+                )
+
+            margin_input = gr.Slider(
+                minimum=0,
+                maximum=100,
+                value=15,
+                step=1,
+                label="底部距離 / 邊界距離",
+                info="底部字幕時最有感；中間/上方模式影響較小"
+            )
 
             with gr.Row():
                 btn_preview = gr.Button("⏱️ 測試合併（僅前2分鐘）", variant="secondary")
@@ -363,18 +578,31 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             status_output = gr.Textbox(
                 label="執行狀態 / 錯誤日誌",
                 interactive=False,
-                placeholder="等待操作中..."
+                placeholder="等待操作中...",
+                lines=18
             )
+
+    preview_inputs = [
+        video_input,
+        sub_input,
+        cn_size_input,
+        en_size_input,
+        subtitle_position_input,
+        outline_input,
+        shadow_input,
+        margin_input,
+        quality_input
+    ]
 
     btn_preview.click(
         fn=handle_preview_merge,
-        inputs=[video_input, sub_input, cn_size_input, en_size_input],
+        inputs=preview_inputs,
         outputs=[video_output, status_output]
     )
 
     btn_submit.click(
         fn=handle_full_merge,
-        inputs=[video_input, sub_input, cn_size_input, en_size_input],
+        inputs=preview_inputs,
         outputs=[video_output, status_output]
     )
 
