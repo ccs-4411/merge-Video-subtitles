@@ -17,6 +17,10 @@ TEMP_FILE_EXPIRE_HOURS = 6
 PREVIEW_SECONDS = 120
 FONT_NAME = "Noto Sans CJK TC"
 
+# 1080p 預設基準值（v3.3 用來自動換算滑桿）
+DEFAULT_CN_1080 = 28
+DEFAULT_EN_1080 = 14
+
 # =========================================================
 # 背景清理舊暫存檔
 # =========================================================
@@ -224,16 +228,10 @@ def get_resolution_profile(mode: str, actual_video_height: int):
     """
     回傳:
     {
-        "label": "1080p / 720p / 480p / 自動(...)",
+        "label": "...",
         "size_multiplier": float,
         "margin_multiplier": float
     }
-
-    規則：
-    - 1080p：直接用你輸入的字級
-    - 720p：自動放大
-    - 480p：再放大
-    - 自動偵測：依影片高度自動套用
     """
     if mode == "1080p":
         return {
@@ -259,22 +257,53 @@ def get_resolution_profile(mode: str, actual_video_height: int):
     # 自動偵測
     if actual_video_height >= 1000:
         return {
-            "label": f"自動偵測 → 1080p 档位（影片高度 {actual_video_height}px）",
+            "label": f"自動偵測 → 1080p 檔位（影片高度 {actual_video_height}px）",
             "size_multiplier": 1.0,
             "margin_multiplier": 1.0
         }
     elif actual_video_height >= 650:
         return {
-            "label": f"自動偵測 → 720p 档位（影片高度 {actual_video_height}px）",
+            "label": f"自動偵測 → 720p 檔位（影片高度 {actual_video_height}px）",
             "size_multiplier": 1.5,
             "margin_multiplier": 1.2
         }
     else:
         return {
-            "label": f"自動偵測 → 480p 档位（影片高度 {actual_video_height}px）",
+            "label": f"自動偵測 → 480p 檔位（影片高度 {actual_video_height}px）",
             "size_multiplier": 2.2,
             "margin_multiplier": 1.5
         }
+
+
+# =========================================================
+# v3.3：依解析度模式自動帶入建議字級
+# =========================================================
+def suggest_font_sizes_by_resolution(mode: str):
+    """
+    回傳建議的中文字級、英文字級
+    - 1080p: 28 / 14
+    - 720p : 42 / 21
+    - 480p : 61 / 30
+    - 自動偵測: 不改
+    """
+    if mode == "1080p":
+        return DEFAULT_CN_1080, DEFAULT_EN_1080
+    elif mode == "720p":
+        return int(round(DEFAULT_CN_1080 * 1.5)), int(round(DEFAULT_EN_1080 * 1.5))
+    elif mode == "480p":
+        return int(round(DEFAULT_CN_1080 * 2.2)), int(round(DEFAULT_EN_1080 * 2.2))
+    else:
+        return None, None
+
+
+def on_resolution_mode_change(mode):
+    cn, en = suggest_font_sizes_by_resolution(mode)
+
+    # 自動偵測時不改滑桿
+    if cn is None or en is None:
+        return gr.update(), gr.update()
+
+    return gr.update(value=cn), gr.update(value=en)
 
 
 # =========================================================
@@ -541,11 +570,17 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3.2")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3.3")
     gr.Markdown(
         "支援：**SRT / ASS**、**預覽 2 分鐘**、**正式完整輸出**、"
         "**中文/外文分開字級**、**字幕位置 / 邊框 / 陰影 / 品質設定**、"
         "**字幕解析度模式（1080p / 720p / 480p / 自動）**。"
+    )
+    gr.Markdown(
+        "### v3.3 新增：切換解析度模式時，字幕大小會自動帶入建議值\n"
+        f"- 1080p → 中文 {DEFAULT_CN_1080} / 英文 {DEFAULT_EN_1080}\n"
+        f"- 720p → 中文 {int(round(DEFAULT_CN_1080 * 1.5))} / 英文 {int(round(DEFAULT_EN_1080 * 1.5))}\n"
+        f"- 480p → 中文 {int(round(DEFAULT_CN_1080 * 2.2))} / 英文 {int(round(DEFAULT_EN_1080 * 2.2))}"
     )
 
     with gr.Row():
@@ -563,20 +598,20 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             with gr.Row():
                 cn_size_input = gr.Slider(
                     minimum=10,
-                    maximum=80,
-                    value=28,
+                    maximum=100,
+                    value=DEFAULT_CN_1080,
                     step=1,
                     label="中文 / 雙語字幕基準大小",
-                    info="1080p 基準值；720p / 480p 模式會自動放大"
+                    info="切換 1080p / 720p / 480p 時會自動帶入建議值"
                 )
 
                 en_size_input = gr.Slider(
                     minimum=6,
-                    maximum=50,
-                    value=14,
+                    maximum=60,
+                    value=DEFAULT_EN_1080,
                     step=1,
                     label="純外文字幕基準大小",
-                    info="1080p 基準值；720p / 480p 模式會自動放大"
+                    info="切換 1080p / 720p / 480p 時會自動帶入建議值"
                 )
 
             with gr.Row():
@@ -641,6 +676,15 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                 placeholder="等待操作中...",
                 lines=20
             )
+
+    # =====================================================
+    # v3.3：切換解析度模式時，自動更新建議字級
+    # =====================================================
+    subtitle_resolution_mode_input.change(
+        fn=on_resolution_mode_change,
+        inputs=[subtitle_resolution_mode_input],
+        outputs=[cn_size_input, en_size_input]
+    )
 
     preview_inputs = [
         video_input,
