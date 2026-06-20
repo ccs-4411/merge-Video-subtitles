@@ -13,10 +13,7 @@ import gradio as gr
 TEMP_DIR = "temp_files"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# 自動清理：超過幾小時的暫存檔刪除
 TEMP_FILE_EXPIRE_HOURS = 6
-
-# 預覽模式只輸出前 120 秒
 PREVIEW_SECONDS = 120
 
 
@@ -24,9 +21,6 @@ PREVIEW_SECONDS = 120
 # 背景清理舊暫存檔
 # =========================================================
 def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS):
-    """
-    刪除超過 expire_hours 的暫存檔
-    """
     if not os.path.exists(folder):
         return
 
@@ -51,9 +45,6 @@ def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS)
 
 
 def start_background_cleanup():
-    """
-    啟動時先清一次，之後每 1 小時清一次
-    """
     def loop():
         while True:
             cleanup_old_temp_files()
@@ -102,9 +93,6 @@ def check_ffmpeg_tools():
 # 影片解析度偵測
 # =========================================================
 def get_video_height(video_path):
-    """
-    使用 ffprobe 自動偵測影片的實際垂直解析度(高度)
-    """
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -133,10 +121,10 @@ def get_video_height(video_path):
 # =========================================================
 def clean_and_prepare_srt(input_sub_path, output_sub_path):
     """
-    強力移除字幕內所有干擾樣式，還原為最純淨的純文字 SRT
+    移除字幕中的 HTML 標籤與 {xxx} 樣式
     注意：
-    - 這樣做對 ASS 也能讀，但 ASS 的格式化會被清掉
-    - 如果你希望保留 ASS 樣式，就不要清 ASS
+    - 若上傳的是 ASS，這樣做會把 ASS 樣式清掉
+    - 如果你之後想保留 ASS 樣式，可以改成只清理 .srt
     """
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -144,9 +132,7 @@ def clean_and_prepare_srt(input_sub_path, output_sub_path):
 
         cleaned_lines = []
         for line in lines:
-            # 去除 HTML 標籤
             line = re.sub(r"<[^>]+>", "", line)
-            # 去除 {xxx} 樣式標記
             line = re.sub(r"\{[^}]+\}", "", line)
             cleaned_lines.append(line)
 
@@ -163,13 +149,8 @@ def clean_and_prepare_srt(input_sub_path, output_sub_path):
 # 建立 subtitles filter
 # =========================================================
 def build_subtitle_filter(subtitle_path, font_size, margin_v):
-    """
-    產生 ffmpeg subtitles filter 字串
-    """
-    # Linux 路徑保護
     safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
 
-    # Railway 上搭配 fonts-noto-cjk
     style = (
         f"Fontname=Noto Sans CJK TC,"
         f"FontSize={font_size},"
@@ -183,32 +164,23 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
 
 
 # =========================================================
-# 取得 Gradio 上傳檔案路徑
+# Gradio File 路徑標準化
 # =========================================================
 def normalize_gradio_file_path(file_obj):
-    """
-    Gradio 的 File 元件有時傳回字串，有時是物件(dict/NamedString)
-    這裡統一轉成實際檔案路徑
-    """
     if file_obj is None:
         return None
 
-    # 直接就是字串路徑
     if isinstance(file_obj, str):
         return file_obj
 
-    # dict 形式
     if isinstance(file_obj, dict):
-        # 常見可能鍵值
         for key in ["name", "path"]:
             if key in file_obj and file_obj[key]:
                 return file_obj[key]
 
-    # 物件形式（有 name 屬性）
     if hasattr(file_obj, "name"):
         return file_obj.name
 
-    # 其他情況保底轉字串
     return str(file_obj)
 
 
@@ -216,14 +188,6 @@ def normalize_gradio_file_path(file_obj):
 # 核心：影片與字幕合併
 # =========================================================
 def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
-    """
-    video_path: 影片路徑
-    subtitle_path: 字幕路徑
-    cn_size: 中文/雙語字幕基準大小
-    en_size: 純外文字幕基準大小 (目前保留參數，未做自動語系判斷)
-    preview_mode: True 時只輸出前 2 分鐘
-    """
-    # Gradio File 元件標準化
     subtitle_path = normalize_gradio_file_path(subtitle_path)
 
     if not video_path or not subtitle_path:
@@ -235,38 +199,28 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     if not os.path.exists(subtitle_path):
         return None, f"❌ 找不到字幕檔案：{subtitle_path}"
 
-    # 啟動前先清一次舊檔
     cleanup_old_temp_files()
-
     task_id = str(uuid.uuid4())
 
-    # 產出清理後字幕檔
     cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
-
-    # 判斷副檔名
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
 
-    # 預設：最後給 ffmpeg 用的字幕檔路徑
     final_sub_path = subtitle_path
 
-    # 對 .srt / .ass 做清理
-    # 若你要保留 ASS 樣式，這裡可改成只處理 .srt
     if sub_ext in [".srt", ".ass"]:
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
         else:
             final_sub_path = subtitle_path
 
-    # 區分測試版影片與正式版影片命名
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
-    # ================= 核心智能縮放邏輯 =================
+    # 智能縮放
     video_height = get_video_height(video_path)
     scale_factor = video_height / 1080.0
 
-    # 目前先沿用你的做法：主要使用 cn_size
-    # en_size 保留，之後若要做純英文字幕判斷再接進來
+    # 目前仍沿用你的邏輯：主要使用 cn_size
     final_cn_size = max(int(cn_size * scale_factor), 8)
     final_margin_v = max(int(15 * scale_factor), 6)
 
@@ -283,14 +237,12 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
         f"套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
     )
 
-    # ================= FFmpeg 指令 =================
     cmd = [
         "ffmpeg",
         "-y",
         "-i", video_path
     ]
 
-    # 預覽模式只輸出前 PREVIEW_SECONDS 秒
     if preview_mode:
         cmd.extend(["-t", str(PREVIEW_SECONDS)])
 
@@ -325,7 +277,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             print("FFmpeg 錯誤日誌：\n", process.stderr)
             return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
 
-        # 成功後刪除中間清理字幕檔
         if os.path.exists(cleaned_sub_path):
             try:
                 os.remove(cleaned_sub_path)
@@ -345,7 +296,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 
 
 # =========================================================
-# Gradio 按鈕分流函式
+# 按鈕包裝
 # =========================================================
 def handle_full_merge(video, subtitle, cn_sz, en_sz):
     return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=False)
@@ -429,7 +380,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
 
 
 # =========================================================
-# Railway 啟動
+# 啟動
 # =========================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
