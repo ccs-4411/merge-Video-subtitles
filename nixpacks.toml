@@ -1,0 +1,6 @@
+[phases.setup]
+nixPkgs = ["...", "ffmpeg"]
+aptPkgs = ["...", "fonts-noto-cjk"]
+
+[start]
+cmd = "python app.py"
