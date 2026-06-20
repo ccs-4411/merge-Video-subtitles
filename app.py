@@ -17,9 +17,14 @@ TEMP_FILE_EXPIRE_HOURS = 6
 PREVIEW_SECONDS = 120
 FONT_NAME = "Noto Sans CJK TC"
 
-# 1080p 預設基準值（v3.3 用來自動換算滑桿）
-DEFAULT_CN_1080 = 28
-DEFAULT_EN_1080 = 14
+# =========================================================
+# 你指定的固定字級規則
+# =========================================================
+FONT_PRESETS = {
+    "1080p": {"cn": 99, "en": 50},
+    "720p":  {"cn": 66, "en": 33},
+    "480p":  {"cn": 44, "en": 22},
+}
 
 # =========================================================
 # 背景清理舊暫存檔
@@ -222,88 +227,38 @@ def get_quality_params(quality: str):
 
 
 # =========================================================
-# 字幕解析度模式 -> 倍率策略
+# 依影片高度自動判斷字幕解析度模式
 # =========================================================
-def get_resolution_profile(mode: str, actual_video_height: int):
+def auto_detect_resolution_mode(actual_video_height: int) -> str:
+    if actual_video_height >= 1000:
+        return "1080p"
+    elif actual_video_height >= 650:
+        return "720p"
+    else:
+        return "480p"
+
+
+def resolve_resolution_mode(selected_mode: str, actual_video_height: int):
     """
     回傳:
-    {
-        "label": "...",
-        "size_multiplier": float,
-        "margin_multiplier": float
-    }
+    (final_mode, label)
     """
-    if mode == "1080p":
-        return {
-            "label": "1080p",
-            "size_multiplier": 1.0,
-            "margin_multiplier": 1.0
-        }
-
-    if mode == "720p":
-        return {
-            "label": "720p",
-            "size_multiplier": 1.5,
-            "margin_multiplier": 1.2
-        }
-
-    if mode == "480p":
-        return {
-            "label": "480p",
-            "size_multiplier": 2.2,
-            "margin_multiplier": 1.5
-        }
-
-    # 自動偵測
-    if actual_video_height >= 1000:
-        return {
-            "label": f"自動偵測 → 1080p 檔位（影片高度 {actual_video_height}px）",
-            "size_multiplier": 1.0,
-            "margin_multiplier": 1.0
-        }
-    elif actual_video_height >= 650:
-        return {
-            "label": f"自動偵測 → 720p 檔位（影片高度 {actual_video_height}px）",
-            "size_multiplier": 1.5,
-            "margin_multiplier": 1.2
-        }
-    else:
-        return {
-            "label": f"自動偵測 → 480p 檔位（影片高度 {actual_video_height}px）",
-            "size_multiplier": 2.2,
-            "margin_multiplier": 1.5
-        }
+    if selected_mode == "自動偵測":
+        detected = auto_detect_resolution_mode(actual_video_height)
+        return detected, f"自動偵測 → {detected}（影片高度 {actual_video_height}px）"
+    return selected_mode, selected_mode
 
 
 # =========================================================
-# v3.3：依解析度模式自動帶入建議字級
+# v3.4：切換解析度模式時，自動帶入固定建議字級
 # =========================================================
-def suggest_font_sizes_by_resolution(mode: str):
-    """
-    回傳建議的中文字級、英文字級
-    - 1080p: 28 / 14
-    - 720p : 42 / 21
-    - 480p : 61 / 30
-    - 自動偵測: 不改
-    """
-    if mode == "1080p":
-        return DEFAULT_CN_1080, DEFAULT_EN_1080
-    elif mode == "720p":
-        return int(round(DEFAULT_CN_1080 * 1.5)), int(round(DEFAULT_EN_1080 * 1.5))
-    elif mode == "480p":
-        return int(round(DEFAULT_CN_1080 * 2.2)), int(round(DEFAULT_EN_1080 * 2.2))
-    else:
-        return None, None
-
-
 def on_resolution_mode_change(mode):
-    cn, en = suggest_font_sizes_by_resolution(mode)
+    if mode in FONT_PRESETS:
+        preset = FONT_PRESETS[mode]
+        return gr.update(value=preset["cn"]), gr.update(value=preset["en"])
 
     # 自動偵測時不改滑桿
-    if cn is None or en is None:
-        return gr.update(), gr.update()
-
-    return gr.update(value=cn), gr.update(value=en)
+    return gr.update(), gr.update()
 
 
 # =========================================================
@@ -378,14 +333,10 @@ def merge_video_subtitle(
     # 影片資訊 / 品質設定
     # =====================================================
     actual_video_height = get_video_height(video_path)
-
-    resolution_profile = get_resolution_profile(
+    final_resolution_mode, resolution_label = resolve_resolution_mode(
         subtitle_resolution_mode,
         actual_video_height
     )
-    size_multiplier = resolution_profile["size_multiplier"]
-    margin_multiplier = resolution_profile["margin_multiplier"]
-    resolution_label = resolution_profile["label"]
 
     quality_params = get_quality_params(quality_mode)
     preset = quality_params["preset"]
@@ -401,10 +352,13 @@ def merge_video_subtitle(
     if sub_ext == ".ass":
         video_filter = build_ass_subtitle_filter(subtitle_path)
         subtitle_mode_text = "ASS 字幕（保留原樣式）"
-        font_info_text = "ASS 模式下沿用字幕檔內建樣式；解析度字級模式不套用。"
+        font_info_text = (
+            f"字幕解析度模式: {resolution_label}\n"
+            "ASS 模式下沿用字幕檔內建樣式；不強制改字級。"
+        )
 
     # =====================================================
-    # SRT：依解析度檔位倍率計算字級
+    # SRT：直接依 1080p / 720p / 480p 固定字級套用
     # =====================================================
     else:
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
@@ -414,16 +368,16 @@ def merge_video_subtitle(
             final_sub_path = subtitle_path
 
         subtitle_mode = detect_subtitle_mode(final_sub_path)
+        preset_font = FONT_PRESETS.get(final_resolution_mode, FONT_PRESETS["1080p"])
 
         if subtitle_mode == "latin":
-            base_font_size = en_size
+            final_font_size = preset_font["en"]
             subtitle_mode_text = "純外文字幕"
         else:
-            base_font_size = cn_size
+            final_font_size = preset_font["cn"]
             subtitle_mode_text = "中文字幕 / 雙語字幕"
 
-        final_font_size = max(int(base_font_size * size_multiplier), 8)
-        final_margin_v = max(int(margin_bottom * margin_multiplier), 0)
+        final_margin_v = max(int(margin_bottom), 0)
         alignment_code = get_alignment_code(subtitle_position)
 
         video_filter = build_srt_subtitle_filter(
@@ -438,11 +392,8 @@ def merge_video_subtitle(
         font_info_text = (
             f"字幕判定: {subtitle_mode_text}\n"
             f"字幕解析度模式: {resolution_label}\n"
-            f"字級倍率: x{size_multiplier}\n"
-            f"邊界距離倍率: x{margin_multiplier}\n"
-            f"套用基準字體: {base_font_size}\n"
-            f"實際輸出字體: {final_font_size}px\n"
-            f"實際邊界距離: {final_margin_v}px"
+            f"套用固定字級: {final_font_size}px\n"
+            f"底部距離: {final_margin_v}px"
         )
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
@@ -486,6 +437,7 @@ def merge_video_subtitle(
     print("字幕原始路徑：", subtitle_path)
     print("實際使用字幕：", final_sub_path)
     print("輸出路徑：", output_path)
+    print("字幕解析度模式：", final_resolution_mode)
     print("FFmpeg 命令：")
     print(" ".join(cmd))
     print("====================================\n")
@@ -570,17 +522,18 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3.3")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3.4")
     gr.Markdown(
         "支援：**SRT / ASS**、**預覽 2 分鐘**、**正式完整輸出**、"
-        "**中文/外文分開字級**、**字幕位置 / 邊框 / 陰影 / 品質設定**、"
+        "**字幕位置 / 邊框 / 陰影 / 品質設定**、"
         "**字幕解析度模式（1080p / 720p / 480p / 自動）**。"
     )
     gr.Markdown(
-        "### v3.3 新增：切換解析度模式時，字幕大小會自動帶入建議值\n"
-        f"- 1080p → 中文 {DEFAULT_CN_1080} / 英文 {DEFAULT_EN_1080}\n"
-        f"- 720p → 中文 {int(round(DEFAULT_CN_1080 * 1.5))} / 英文 {int(round(DEFAULT_EN_1080 * 1.5))}\n"
-        f"- 480p → 中文 {int(round(DEFAULT_CN_1080 * 2.2))} / 英文 {int(round(DEFAULT_EN_1080 * 2.2))}"
+        "### v3.4 固定字幕字級規則\n"
+        f"- **1080p** → 中文 {FONT_PRESETS['1080p']['cn']} / 英文 {FONT_PRESETS['1080p']['en']}\n"
+        f"- **720p** → 中文 {FONT_PRESETS['720p']['cn']} / 英文 {FONT_PRESETS['720p']['en']}\n"
+        f"- **480p** → 中文 {FONT_PRESETS['480p']['cn']} / 英文 {FONT_PRESETS['480p']['en']}\n"
+        "- **自動偵測**：依影片高度自動選擇 1080p / 720p / 480p"
     )
 
     with gr.Row():
@@ -598,20 +551,20 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             with gr.Row():
                 cn_size_input = gr.Slider(
                     minimum=10,
-                    maximum=100,
-                    value=DEFAULT_CN_1080,
+                    maximum=150,
+                    value=FONT_PRESETS["1080p"]["cn"],
                     step=1,
-                    label="中文 / 雙語字幕基準大小",
-                    info="切換 1080p / 720p / 480p 時會自動帶入建議值"
+                    label="中文 / 雙語字幕顯示欄（僅供查看）",
+                    info="v3.4 會依解析度模式自動帶入固定建議值；SRT 合併時以固定規則為準"
                 )
 
                 en_size_input = gr.Slider(
                     minimum=6,
-                    maximum=60,
-                    value=DEFAULT_EN_1080,
+                    maximum=100,
+                    value=FONT_PRESETS["1080p"]["en"],
                     step=1,
-                    label="純外文字幕基準大小",
-                    info="切換 1080p / 720p / 480p 時會自動帶入建議值"
+                    label="純外文字幕顯示欄（僅供查看）",
+                    info="v3.4 會依解析度模式自動帶入固定建議值；SRT 合併時以固定規則為準"
                 )
 
             with gr.Row():
@@ -619,7 +572,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     choices=["自動偵測", "1080p", "720p", "480p"],
                     value="1080p",
                     label="字幕解析度模式",
-                    info="1080p=直接用輸入字級；720p/480p 會自動放大"
+                    info="SRT 會直接套用固定字級：1080p=99/50，720p=66/33，480p=44/22"
                 )
 
                 quality_input = gr.Dropdown(
@@ -678,7 +631,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             )
 
     # =====================================================
-    # v3.3：切換解析度模式時，自動更新建議字級
+    # 切換解析度模式時，自動更新顯示字級
     # =====================================================
     subtitle_resolution_mode_input.change(
         fn=on_resolution_mode_change,
