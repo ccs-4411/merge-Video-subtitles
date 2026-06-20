@@ -147,9 +147,6 @@ def clean_subtitle_text_line(line: str) -> str:
 
 
 def clean_srt_file(input_sub_path, output_sub_path):
-    """
-    只清理 SRT，不處理 ASS
-    """
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
@@ -212,23 +209,71 @@ def get_alignment_code(position: str) -> int:
 
 
 def get_quality_params(quality: str):
-    """
-    回傳 ffmpeg 視訊參數
-    """
     if quality == "快速":
-        return {
-            "preset": "veryfast",
-            "crf": "25"
-        }
+        return {"preset": "veryfast", "crf": "25"}
     elif quality == "高品質":
+        return {"preset": "medium", "crf": "19"}
+    else:
+        return {"preset": "fast", "crf": "22"}
+
+
+# =========================================================
+# 字幕解析度模式 -> 倍率策略
+# =========================================================
+def get_resolution_profile(mode: str, actual_video_height: int):
+    """
+    回傳:
+    {
+        "label": "1080p / 720p / 480p / 自動(...)",
+        "size_multiplier": float,
+        "margin_multiplier": float
+    }
+
+    規則：
+    - 1080p：直接用你輸入的字級
+    - 720p：自動放大
+    - 480p：再放大
+    - 自動偵測：依影片高度自動套用
+    """
+    if mode == "1080p":
         return {
-            "preset": "medium",
-            "crf": "19"
+            "label": "1080p",
+            "size_multiplier": 1.0,
+            "margin_multiplier": 1.0
         }
-    else:  # 標準
+
+    if mode == "720p":
         return {
-            "preset": "fast",
-            "crf": "22"
+            "label": "720p",
+            "size_multiplier": 1.5,
+            "margin_multiplier": 1.2
+        }
+
+    if mode == "480p":
+        return {
+            "label": "480p",
+            "size_multiplier": 2.2,
+            "margin_multiplier": 1.5
+        }
+
+    # 自動偵測
+    if actual_video_height >= 1000:
+        return {
+            "label": f"自動偵測 → 1080p 档位（影片高度 {actual_video_height}px）",
+            "size_multiplier": 1.0,
+            "margin_multiplier": 1.0
+        }
+    elif actual_video_height >= 650:
+        return {
+            "label": f"自動偵測 → 720p 档位（影片高度 {actual_video_height}px）",
+            "size_multiplier": 1.5,
+            "margin_multiplier": 1.2
+        }
+    else:
+        return {
+            "label": f"自動偵測 → 480p 档位（影片高度 {actual_video_height}px）",
+            "size_multiplier": 2.2,
+            "margin_multiplier": 1.5
         }
 
 
@@ -279,6 +324,7 @@ def merge_video_subtitle(
     shadow_size,
     margin_bottom,
     quality_mode,
+    subtitle_resolution_mode,
     preview_mode=False
 ):
     subtitle_path = normalize_gradio_file_path(subtitle_path)
@@ -296,38 +342,42 @@ def merge_video_subtitle(
     task_id = str(uuid.uuid4())
 
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
-
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
     # =====================================================
-    # 影片解析度縮放
+    # 影片資訊 / 品質設定
     # =====================================================
-    video_height = get_video_height(video_path)
-    scale_factor = video_height / 1080.0
+    actual_video_height = get_video_height(video_path)
 
-    # =====================================================
-    # 品質設定
-    # =====================================================
+    resolution_profile = get_resolution_profile(
+        subtitle_resolution_mode,
+        actual_video_height
+    )
+    size_multiplier = resolution_profile["size_multiplier"]
+    margin_multiplier = resolution_profile["margin_multiplier"]
+    resolution_label = resolution_profile["label"]
+
     quality_params = get_quality_params(quality_mode)
     preset = quality_params["preset"]
     crf = quality_params["crf"]
 
-    # =====================================================
-    # ASS 與 SRT 分流
-    # =====================================================
     subtitle_mode_text = ""
     font_info_text = ""
     final_sub_path = subtitle_path
 
+    # =====================================================
+    # ASS：保留原樣式
+    # =====================================================
     if sub_ext == ".ass":
-        # ASS：保留原樣式
         video_filter = build_ass_subtitle_filter(subtitle_path)
         subtitle_mode_text = "ASS 字幕（保留原樣式）"
-        font_info_text = "ASS 模式下沿用字幕檔內建樣式"
+        font_info_text = "ASS 模式下沿用字幕檔內建樣式；解析度字級模式不套用。"
 
+    # =====================================================
+    # SRT：依解析度檔位倍率計算字級
+    # =====================================================
     else:
-        # SRT：清理後再套用 force_style
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_srt_file(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
@@ -343,11 +393,8 @@ def merge_video_subtitle(
             base_font_size = cn_size
             subtitle_mode_text = "中文字幕 / 雙語字幕"
 
-        final_font_size = max(int(base_font_size * scale_factor), 8)
-
-        # 上方 / 中間 時 MarginV 沒那麼重要，但保留給底部模式使用
-        final_margin_v = max(int(margin_bottom * scale_factor), 0)
-
+        final_font_size = max(int(base_font_size * size_multiplier), 8)
+        final_margin_v = max(int(margin_bottom * margin_multiplier), 0)
         alignment_code = get_alignment_code(subtitle_position)
 
         video_filter = build_srt_subtitle_filter(
@@ -361,19 +408,22 @@ def merge_video_subtitle(
 
         font_info_text = (
             f"字幕判定: {subtitle_mode_text}\n"
+            f"字幕解析度模式: {resolution_label}\n"
+            f"字級倍率: x{size_multiplier}\n"
+            f"邊界距離倍率: x{margin_multiplier}\n"
             f"套用基準字體: {base_font_size}\n"
-            f"實際輸出字體: {final_font_size}px"
+            f"實際輸出字體: {final_font_size}px\n"
+            f"實際邊界距離: {final_margin_v}px"
         )
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
 
     info_msg = (
         f"{mode_text}\n"
-        f"影片高度: {video_height}px\n"
+        f"實際影片高度: {actual_video_height}px\n"
         f"字幕位置: {subtitle_position}\n"
         f"邊框粗細: {outline_size}\n"
         f"陰影大小: {shadow_size}\n"
-        f"底部距離: {margin_bottom}\n"
         f"輸出品質: {quality_mode}\n"
         f"字幕模式: {subtitle_mode_text}\n"
     )
@@ -448,7 +498,7 @@ def merge_video_subtitle(
 # =========================================================
 # 按鈕包裝
 # =========================================================
-def handle_full_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality):
+def handle_full_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality, sub_res_mode):
     return merge_video_subtitle(
         video_path=video,
         subtitle_path=subtitle,
@@ -459,11 +509,12 @@ def handle_full_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margi
         shadow_size=shadow,
         margin_bottom=margin,
         quality_mode=quality,
+        subtitle_resolution_mode=sub_res_mode,
         preview_mode=False
     )
 
 
-def handle_preview_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality):
+def handle_preview_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, margin, quality, sub_res_mode):
     return merge_video_subtitle(
         video_path=video,
         subtitle_path=subtitle,
@@ -474,6 +525,7 @@ def handle_preview_merge(video, subtitle, cn_sz, en_sz, pos, outline, shadow, ma
         shadow_size=shadow,
         margin_bottom=margin,
         quality_mode=quality,
+        subtitle_resolution_mode=sub_res_mode,
         preview_mode=True
     )
 
@@ -489,10 +541,11 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 v3.2")
     gr.Markdown(
         "支援：**SRT / ASS**、**預覽 2 分鐘**、**正式完整輸出**、"
-        "**中文/外文分開字級**、**字幕位置 / 邊框 / 陰影 / 品質設定**。"
+        "**中文/外文分開字級**、**字幕位置 / 邊框 / 陰影 / 品質設定**、"
+        "**字幕解析度模式（1080p / 720p / 480p / 自動）**。"
     )
 
     with gr.Row():
@@ -510,27 +563,28 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             with gr.Row():
                 cn_size_input = gr.Slider(
                     minimum=10,
-                    maximum=60,
-                    value=20,
+                    maximum=80,
+                    value=28,
                     step=1,
                     label="中文 / 雙語字幕基準大小",
-                    info="字幕中含有中文、日文、韓文時優先使用"
+                    info="1080p 基準值；720p / 480p 模式會自動放大"
                 )
 
                 en_size_input = gr.Slider(
                     minimum=6,
-                    maximum=40,
-                    value=12,
+                    maximum=50,
+                    value=14,
                     step=1,
                     label="純外文字幕基準大小",
-                    info="字幕為純英文 / 外文時使用"
+                    info="1080p 基準值；720p / 480p 模式會自動放大"
                 )
 
             with gr.Row():
-                subtitle_position_input = gr.Dropdown(
-                    choices=["底部", "中間", "上方"],
-                    value="底部",
-                    label="字幕位置"
+                subtitle_resolution_mode_input = gr.Dropdown(
+                    choices=["自動偵測", "1080p", "720p", "480p"],
+                    value="1080p",
+                    label="字幕解析度模式",
+                    info="1080p=直接用輸入字級；720p/480p 會自動放大"
                 )
 
                 quality_input = gr.Dropdown(
@@ -540,30 +594,36 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                 )
 
             with gr.Row():
+                subtitle_position_input = gr.Dropdown(
+                    choices=["底部", "中間", "上方"],
+                    value="底部",
+                    label="字幕位置"
+                )
+
+                margin_input = gr.Slider(
+                    minimum=0,
+                    maximum=150,
+                    value=15,
+                    step=1,
+                    label="底部距離 / 邊界距離"
+                )
+
+            with gr.Row():
                 outline_input = gr.Slider(
                     minimum=0,
-                    maximum=5,
-                    value=1.0,
+                    maximum=8,
+                    value=1.5,
                     step=0.1,
                     label="字幕邊框粗細"
                 )
 
                 shadow_input = gr.Slider(
                     minimum=0,
-                    maximum=5,
+                    maximum=8,
                     value=0,
                     step=0.1,
                     label="字幕陰影大小"
                 )
-
-            margin_input = gr.Slider(
-                minimum=0,
-                maximum=100,
-                value=15,
-                step=1,
-                label="底部距離 / 邊界距離",
-                info="底部字幕時最有感；中間/上方模式影響較小"
-            )
 
             with gr.Row():
                 btn_preview = gr.Button("⏱️ 測試合併（僅前2分鐘）", variant="secondary")
@@ -579,7 +639,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                 label="執行狀態 / 錯誤日誌",
                 interactive=False,
                 placeholder="等待操作中...",
-                lines=18
+                lines=20
             )
 
     preview_inputs = [
@@ -591,7 +651,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
         outline_input,
         shadow_input,
         margin_input,
-        quality_input
+        quality_input,
+        subtitle_resolution_mode_input
     ]
 
     btn_preview.click(
