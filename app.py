@@ -21,7 +21,7 @@ PREVIEW_SECONDS = 120
 
 
 # =========================================================
-# 工具函式：背景清理舊暫存檔
+# 背景清理舊暫存檔
 # =========================================================
 def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS):
     """
@@ -65,21 +65,37 @@ def start_background_cleanup():
 
 
 # =========================================================
-# 工具函式：確認 ffmpeg / ffprobe 是否存在
+# 檢查 ffmpeg / ffprobe
 # =========================================================
 def check_ffmpeg_tools():
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
 
-    if not ffmpeg_path:
-        print("【系統警告】找不到 ffmpeg，請確認 Railway 已安裝 ffmpeg。")
-    else:
-        print(f"【系統初始化】ffmpeg 路徑: {ffmpeg_path}")
+    print("========== 系統檢查 ==========")
+    print("PATH =", os.environ.get("PATH", ""))
 
-    if not ffprobe_path:
-        print("【系統警告】找不到 ffprobe，請確認 Railway 已安裝 ffmpeg。")
+    if ffmpeg_path:
+        print(f"ffmpeg 路徑: {ffmpeg_path}")
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            print("ffmpeg -version 回傳碼:", r.returncode)
+            print((r.stdout or r.stderr)[:500])
+        except Exception as e:
+            print("ffmpeg 執行失敗:", e)
     else:
-        print(f"【系統初始化】ffprobe 路徑: {ffprobe_path}")
+        print("找不到 ffmpeg")
+
+    if ffprobe_path:
+        print(f"ffprobe 路徑: {ffprobe_path}")
+    else:
+        print("找不到 ffprobe")
+
+    print("=============================")
 
 
 # =========================================================
@@ -144,17 +160,16 @@ def clean_and_prepare_srt(input_sub_path, output_sub_path):
 
 
 # =========================================================
-# 產生字幕濾鏡
+# 建立 subtitles filter
 # =========================================================
 def build_subtitle_filter(subtitle_path, font_size, margin_v):
     """
     產生 ffmpeg subtitles filter 字串
     """
-    # Windows / Linux 路徑保護
+    # Linux 路徑保護
     safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
 
-    # 字型名稱可依你需要改
-    # Railway 若有裝 fonts-noto-cjk，通常 Noto Sans CJK TC 可用
+    # Railway 上搭配 fonts-noto-cjk
     style = (
         f"Fontname=Noto Sans CJK TC,"
         f"FontSize={font_size},"
@@ -168,6 +183,36 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
 
 
 # =========================================================
+# 取得 Gradio 上傳檔案路徑
+# =========================================================
+def normalize_gradio_file_path(file_obj):
+    """
+    Gradio 的 File 元件有時傳回字串，有時是物件(dict/NamedString)
+    這裡統一轉成實際檔案路徑
+    """
+    if file_obj is None:
+        return None
+
+    # 直接就是字串路徑
+    if isinstance(file_obj, str):
+        return file_obj
+
+    # dict 形式
+    if isinstance(file_obj, dict):
+        # 常見可能鍵值
+        for key in ["name", "path"]:
+            if key in file_obj and file_obj[key]:
+                return file_obj[key]
+
+    # 物件形式（有 name 屬性）
+    if hasattr(file_obj, "name"):
+        return file_obj.name
+
+    # 其他情況保底轉字串
+    return str(file_obj)
+
+
+# =========================================================
 # 核心：影片與字幕合併
 # =========================================================
 def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
@@ -178,8 +223,17 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     en_size: 純外文字幕基準大小 (目前保留參數，未做自動語系判斷)
     preview_mode: True 時只輸出前 2 分鐘
     """
+    # Gradio File 元件標準化
+    subtitle_path = normalize_gradio_file_path(subtitle_path)
+
     if not video_path or not subtitle_path:
         return None, "❌ 請確認已上傳影片與字幕檔案。"
+
+    if not os.path.exists(video_path):
+        return None, f"❌ 找不到影片檔案：{video_path}"
+
+    if not os.path.exists(subtitle_path):
+        return None, f"❌ 找不到字幕檔案：{subtitle_path}"
 
     # 啟動前先清一次舊檔
     cleanup_old_temp_files()
@@ -195,8 +249,8 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     # 預設：最後給 ffmpeg 用的字幕檔路徑
     final_sub_path = subtitle_path
 
-    # 對 .srt 做清理；如果是 .ass，這版也會清成 .srt 風格純文字
-    # 若你想保留 ASS 樣式，可改成只處理 .srt
+    # 對 .srt / .ass 做清理
+    # 若你要保留 ASS 樣式，這裡可改成只處理 .srt
     if sub_ext in [".srt", ".ass"]:
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
@@ -212,7 +266,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     scale_factor = video_height / 1080.0
 
     # 目前先沿用你的做法：主要使用 cn_size
-    # en_size 參數保留，之後若你要做「純英文字幕判斷」再接進來
+    # en_size 保留，之後若要做純英文字幕判斷再接進來
     final_cn_size = max(int(cn_size * scale_factor), 8)
     final_margin_v = max(int(15 * scale_factor), 6)
 
@@ -250,6 +304,10 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     ])
 
     print("\n========== FFmpeg 執行開始 ==========")
+    print("影片路徑：", video_path)
+    print("字幕路徑：", subtitle_path)
+    print("實際使用字幕：", final_sub_path)
+    print("輸出路徑：", output_path)
     print("FFmpeg 命令：")
     print(" ".join(cmd))
     print("====================================\n")
@@ -267,8 +325,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             print("FFmpeg 錯誤日誌：\n", process.stderr)
             return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
 
-        # 成功後，若有建立清理字幕檔就保留或刪除皆可
-        # 這裡直接刪掉中間清理字幕檔
+        # 成功後刪除中間清理字幕檔
         if os.path.exists(cleaned_sub_path):
             try:
                 os.remove(cleaned_sub_path)
